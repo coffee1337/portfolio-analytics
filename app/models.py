@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Index, String, func
+from sqlalchemy import Boolean, DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -16,15 +16,21 @@ class Event(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     site_key: Mapped[str] = mapped_column(String(64), index=True)
-    name: Mapped[str] = mapped_column(String(32), index=True)  # pageview | click | section | lang_switch
+    name: Mapped[str] = mapped_column(String(32), index=True)  # pageview|click|ui|section|scroll|ping|exit|lang_switch
     path: Mapped[str] = mapped_column(String(255), default="")
-    visitor: Mapped[str] = mapped_column(String(40), index=True, default="")  # salted daily hash, never raw IP
+    title: Mapped[str] = mapped_column(String(255), default="")
+    session_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    is_me: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    visitor: Mapped[str] = mapped_column(String(40), index=True, default="")  # salted hash, never raw IP
     referrer: Mapped[str] = mapped_column(String(255), default="")
     country: Mapped[str] = mapped_column(String(8), default="")
     device: Mapped[str] = mapped_column(String(16), default="")  # desktop | mobile | tablet | bot
     props_json: Mapped[str] = mapped_column(String(1024), default="")  # compact JSON of extra props
 
-    __table_args__ = (Index("ix_events_key_ts", "site_key", "ts"),)
+    __table_args__ = (
+        Index("ix_events_key_ts", "site_key", "ts"),
+        Index("ix_events_session", "session_id"),
+    )
 
 
 # Tiny helpers so the dashboard does not need a heavy geo/ua dependency.
