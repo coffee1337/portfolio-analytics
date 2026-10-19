@@ -3,6 +3,7 @@ import json
 import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -91,9 +92,9 @@ def check_auth(request: Request) -> bool:
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, days: int = 7, db: Session = Depends(get_db)):
+def dashboard(request: Request, days: int = 7, e: int = 0, db: Session = Depends(get_db)):
     if not check_auth(request):
-        return login_page()
+        return login_page(error=bool(e))
     days = max(1, min(days, 365))
     since = utcnow() - timedelta(days=days)
 
@@ -166,22 +167,29 @@ def dashboard(request: Request, days: int = 7, db: Session = Depends(get_db)):
 
 
 @app.post("/login")
-def login(request: Request, token: str = ""):
-    if ADMIN_TOKEN and token == ADMIN_TOKEN:
+async def login(request: Request):
+    # Manual urlencoded parsing: avoids the python-multipart dependency for one input field.
+    form = parse_qs((await request.body()).decode("utf-8", "replace"))
+    token = (form.get("token") or [""])[0]
+    if ADMIN_TOKEN and token.strip() == ADMIN_TOKEN:
         response = Response(status_code=303)
         response.headers["location"] = "/"
         response.set_cookie(
             "pa_auth", ADMIN_TOKEN, httponly=True, secure=True, samesite="lax", max_age=60 * 60 * 24 * 30
         )
         return response
-    raise HTTPException(status_code=403)
+    # Wrong or missing token: back to the login form (no JSON 403 dead end).
+    response = Response(status_code=303)
+    response.headers["location"] = "/?e=1"
+    return response
 
 
-def login_page() -> str:
-    return """<!doctype html><html><head><meta charset="utf-8"><title>portfolio-analytics</title>
-<style>body{background:#0b0b0c;color:#e8e4da;font-family:ui-monospace,monospace;display:grid;place-items:center;min-height:100vh;margin:0}
-form{display:flex;gap:8px}input{background:#141416;border:1px solid #2a2a2e;color:#e8e4da;padding:10px 14px;border-radius:8px;font-family:inherit}</style></head>
-<body><div style="text-align:center"><h1 style="font-size:20px">portfolio-analytics</h1>
+def login_page(error: bool = False) -> str:
+    hint = "<p style='color:#e5484d;font-size:12px'>неверный токен</p>" if error else ""
+    return f"""<!doctype html><html><head><meta charset="utf-8"><title>portfolio-analytics</title>
+<style>body{{background:#0b0b0c;color:#e8e4da;font-family:ui-monospace,monospace;display:grid;place-items:center;min-height:100vh;margin:0}}
+form{{display:flex;gap:8px}}input{{background:#141416;border:1px solid #2a2a2e;color:#e8e4da;padding:10px 14px;border-radius:8px;font-family:inherit}}</style></head>
+<body><div style="text-align:center"><h1 style="font-size:20px">portfolio-analytics</h1>{hint}
 <form method="post" action="/login"><input type="password" name="token" placeholder="admin token" autofocus><input type="submit" value="→" style="cursor:pointer"></form>
 </div></body></html>"""
 
