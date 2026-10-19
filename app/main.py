@@ -16,6 +16,14 @@ from .schema import CollectIn
 SITE_KEY = os.environ.get("SITE_KEY", "portfolio-dev-key")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # empty = auth disabled (local dev only)
 VISITOR_SALT = os.environ.get("VISITOR_SALT", "change-me-in-prod")
+ALLOWED_ORIGINS = {
+    value.strip()
+    for value in os.environ.get(
+        "ALLOWED_ORIGINS",
+        "https://coffee1337.github.io,http://localhost:5173,http://localhost:4173",
+    ).split(",")
+    if value.strip()
+}
 
 app = FastAPI(title="portfolio-analytics", docs_url=None, redoc_url=None)
 
@@ -41,6 +49,12 @@ async def collect(request: Request, response: Response) -> None:
     except ValueError:
         raise HTTPException(status_code=422)
     if payload.key != SITE_KEY:
+        raise HTTPException(status_code=403)
+    # Browser beacons carry an Origin header — reject foreign sites spamming
+    # fake events through the (public by design) SITE_KEY. Non-browser clients
+    # without Origin are allowed through the key check only.
+    origin = request.headers.get("origin", "")
+    if origin and origin not in ALLOWED_ORIGINS:
         raise HTTPException(status_code=403)
     response.headers["cache-control"] = "no-store"
     response.headers["access-control-allow-origin"] = "*"
@@ -156,7 +170,9 @@ def login(request: Request, token: str = ""):
     if ADMIN_TOKEN and token == ADMIN_TOKEN:
         response = Response(status_code=303)
         response.headers["location"] = "/"
-        response.set_cookie("pa_auth", ADMIN_TOKEN, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30)
+        response.set_cookie(
+            "pa_auth", ADMIN_TOKEN, httponly=True, secure=True, samesite="lax", max_age=60 * 60 * 24 * 30
+        )
         return response
     raise HTTPException(status_code=403)
 
