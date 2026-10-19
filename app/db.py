@@ -5,6 +5,13 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./analytics.db")
 
+# Normalize the PostgreSQL URL: SQLAlchemy 2.1 defaults bare postgresql:// to the
+# psycopg (v3) dialect, but we ship psycopg2 — pin the dialect explicitly.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+
 
 class Base(DeclarativeBase):
     pass
