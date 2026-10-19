@@ -226,13 +226,15 @@ form{{display:flex;gap:8px}}input{{background:#131315;border:1px solid #26262b;c
 
 
 def _sessions(db: Session, since, show_me: bool) -> list:
+    # PostgreSQL has no max(boolean) aggregate — fold the flag to an integer first.
+    me_flag = func.max(case((Event.is_me.is_(True), 1), else_=0))
     stmt = (
         select(
             Event.session_id.label("sid"),
             func.min(Event.ts).label("start"),
             func.max(Event.ts).label("end"),
             func.min(Event.visitor).label("visitor"),
-            func.max(Event.is_me).label("is_me"),
+            me_flag.label("is_me"),
             func.min(Event.device).label("device"),
             func.min(Event.country).label("country"),
             func.min(Event.referrer).label("referrer"),
@@ -244,7 +246,7 @@ def _sessions(db: Session, since, show_me: bool) -> list:
         .group_by(Event.session_id)
     )
     if not show_me:
-        stmt = stmt.having(func.max(Event.is_me).is_(False))
+        stmt = stmt.having(me_flag == 0)
     rows = db.execute(stmt).all()
     sessions = []
     for r in rows:
