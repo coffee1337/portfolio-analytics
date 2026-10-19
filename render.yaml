@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: portfolio-analytics
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      # Получи строку подключения в Neon (Dashboard → проект → Connect → Connection string)
+      # и вставь её здесь в интерфейсе Render (Environment) или при создании сервиса.
+      - key: DATABASE_URL
+        sync: false
+      - key: SITE_KEY
+        sync: false
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: VISITOR_SALT
+        generateValue: true
