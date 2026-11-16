@@ -103,6 +103,13 @@ curl -s -X POST http://127.0.0.1:8000/collect -H "content-type: application/json
 
 Событие без `session` не теряется: сервер создаёт `anon-<visitor>-<YYYYMMDDHH>`.
 
+Демо-данные для локального дашборда (60 сессий за две недели + боты):
+
+```bash
+DATABASE_URL=sqlite:///./demo.db python scripts/seed_demo.py 60
+DATABASE_URL=sqlite:///./demo.db uvicorn app.main:app --port 8000
+```
+
 ## Деплой (Render + Neon)
 
 1. Neon → Create project → скопировать connection string.
