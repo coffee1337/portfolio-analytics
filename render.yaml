@@ -3,12 +3,17 @@ services:
     name: portfolio-analytics
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # Собранная SPA закоммичена в app/static, поэтому сервис поднимается даже
+    # без Node. Если в образе есть npm — фронтенд пересобирается на месте.
+    buildCommand: >-
+      pip install -r requirements.txt &&
+      { command -v npm >/dev/null 2>&1 &&
+      (cd web && npm ci && npm run build) ||
+      echo "[build] npm не найден — используется закоммиченная app/static"; }
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
-      # Получи строку подключения в Neon (Dashboard → проект → Connect → Connection string)
-      # и вставь её здесь в интерфейсе Render (Environment) или при создании сервиса.
+      # Строка подключения Neon (Dashboard → проект → Connect → Connection string)
       - key: DATABASE_URL
         sync: false
       - key: SITE_KEY
@@ -17,3 +22,7 @@ services:
         generateValue: true
       - key: VISITOR_SALT
         generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://coffee1337.github.io,http://localhost:5173,http://localhost:4173
+      - key: GEO_LOOKUP
+        value: "1"

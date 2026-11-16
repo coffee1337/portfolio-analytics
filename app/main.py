@@ -1,20 +1,25 @@
-import hashlib
-import json
+from __future__ import annotations
+
+import logging
 import os
-from urllib.parse import parse_qs
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import inspect, text
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
 
-from .db import Base, engine, get_db
-from .ui import login_page, render_overview, render_session, render_visitor, wipe_events
-from .models import Event, country_from_headers, parse_browser, parse_device, parse_os
-from .schema import CollectIn
+from . import analytics, auth, geo, ingest
+from .db import ensure_schema, get_db
+from .models import Event, utcnow
+from .schema import PayloadError, parse_payload
+
+log = logging.getLogger("portfolio")
+logging.basicConfig(level=logging.INFO)
 
 SITE_KEY = os.environ.get("SITE_KEY", "portfolio-dev-key")
-ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # empty = auth disabled (local dev only)
-VISITOR_SALT = os.environ.get("VISITOR_SALT", "change-me-in-prod")
 ALLOWED_ORIGINS = {
     value.strip()
     for value in os.environ.get(
@@ -23,241 +28,262 @@ ALLOWED_ORIGINS = {
     ).split(",")
     if value.strip()
 }
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="portfolio-analytics", docs_url=None, redoc_url=None)
-
-# Transient IP -> country lookup (result cached; the IP itself is never stored).
-# ip-api.com free tier: 45 req/min, no key. Off via GEO_LOOKUP=0.
-GEO_LOOKUP = os.environ.get("GEO_LOOKUP", "1") == "1"
-_geo_cache: dict = {}
-
-
-def _client_ip(request: Request) -> str:
-    """Last public address in X-Forwarded-For.
-
-    Render (and most proxies) append the real client, so the first hop is often
-    the platform itself — that is why Finland showed up as Poland.
-    """
-    forwarded = request.headers.get("x-forwarded-for", "")
-    parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-    for candidate in reversed(parts):
-        if _is_public(candidate):
-            return candidate
-    direct = request.client.host if request.client else ""
-    return direct if _is_public(direct) else ""
-
-
-def _is_public(ip: str) -> bool:
-    if not ip or ip in ("::1", "localhost"):
-        return False
-    if ip.startswith(("127.", "10.", "192.168.", "169.254.", "0.", "100.64.")):
-        return False
-    if ip.startswith("172."):
-        try:
-            second = int(ip.split(".")[1])
-        except (IndexError, ValueError):
-            return False
-        if 16 <= second <= 31:
-            return False
-    if ip.lower().startswith(("fc", "fd", "fe80")):
-        return False
-    return True
-
-
-def _geo(ip: str) -> tuple[str, str]:
-    """Country code + city. The IP is cached in memory only and never written."""
-    if not GEO_LOOKUP or not ip:
-        return "", ""
-    if ip in _geo_cache:
-        return _geo_cache[ip]
-    country, city = "", ""
-    try:
-        import urllib.request
-
-        with urllib.request.urlopen(
-            f"http://ip-api.com/json/{ip}?fields=status,countryCode,city", timeout=2
-        ) as resp:
-            data = json.loads(resp.read().decode())
-            if data.get("status") == "success":
-                country = str(data.get("countryCode", ""))[:8]
-                city = str(data.get("city", ""))[:64]
-    except Exception:
-        country, city = "", ""
-    if len(_geo_cache) > 2000:
-        _geo_cache.clear()
-    _geo_cache[ip] = (country, city)
-    return country, city
-
-
-def ensure_schema() -> None:
-    """Create the table on fresh databases and add new columns to existing ones.
-
-    create_all does not ALTER existing tables, so introspect and patch manually —
-    this keeps data already collected on Neon when the model grows.
-    """
-    Base.metadata.create_all(bind=engine)
-    additions = {
-        "session_id": "VARCHAR(64) DEFAULT ''",
-        "is_me": "BOOLEAN DEFAULT FALSE",
-        "title": "VARCHAR(255) DEFAULT ''",
-        "city": "VARCHAR(64) DEFAULT ''",
-        "os_name": "VARCHAR(32) DEFAULT ''",
-        "browser": "VARCHAR(32) DEFAULT ''",
-        "lang": "VARCHAR(16) DEFAULT ''",
-        "screen": "VARCHAR(32) DEFAULT ''",
-    }
-    with engine.begin() as conn:
-        cols = {c["name"] for c in inspect(conn).get_columns("events")}
-        for col, ddl in additions.items():
-            if col not in cols:
-                conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {ddl}"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_session ON events (session_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_is_me ON events (is_me)"))
-
-
-@app.on_event("startup")
-def init_db() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     ensure_schema()
+    yield
 
 
-def visitor_id(request: Request, client_id: str) -> str:
-    """Prefer the browser's localStorage id. Fall back to a salted hash only when
-    the client sent nothing — raw IP is still never stored.
-    """
-    clean = "".join(ch for ch in (client_id or "") if ch.isalnum())[:32]
-    if len(clean) >= 8:
-        return clean
-    ip = _client_ip(request)
-    ua = request.headers.get("user-agent", "")
-    return hashlib.sha256(f"{ip}|{ua}|{VISITOR_SALT}".encode()).hexdigest()[:16]
+app = FastAPI(
+    title="portfolio-analytics",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=sorted(ALLOWED_ORIGINS | {"*"}),
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["content-type", "authorization"],
+    allow_credentials=False,
+    max_age=86400,
+)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "ts": utcnow().isoformat()}
 
 
 @app.post("/collect", status_code=204)
-async def collect(request: Request, response: Response) -> None:
+async def collect(request: Request, background: BackgroundTasks, db: Session = Depends(get_db)) -> Response:
     raw = await request.body()
     try:
-        payload = CollectIn.model_validate_json(raw)
-    except ValueError:
-        raise HTTPException(status_code=422)
-    if payload.key != SITE_KEY:
-        raise HTTPException(status_code=403)
-    # Browser beacons carry an Origin header — reject foreign sites spamming
-    # fake events through the (public by design) SITE_KEY. Non-browser clients
-    # without Origin are allowed through the key check only.
+        events = parse_payload(raw)
+    except PayloadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid event") from exc
+    if any(event.key != SITE_KEY for event in events):
+        raise HTTPException(status_code=403, detail="bad key")
     origin = request.headers.get("origin", "")
     if origin and origin not in ALLOWED_ORIGINS:
-        raise HTTPException(status_code=403)
-    response.headers["cache-control"] = "no-store"
-    response.headers["access-control-allow-origin"] = "*"
-    ip = _client_ip(request)
-    header_country = country_from_headers(request.headers)
-    looked_up, city = _geo(ip)
-    country = header_country or looked_up
-    ua = request.headers.get("user-agent", "")
-    with engine.begin() as conn:
-        conn.execute(
-            Event.__table__.insert().values(
-                site_key=payload.key,
-                name=payload.name,
-                path=payload.path[:255],
-                title=(payload.title or "")[:255],
-                session_id=payload.session[:64],
-                is_me=bool(payload.me),
-                visitor=visitor_id(request, payload.visitor),
-                referrer=(payload.referrer or "")[:512],
-                country=country,
-                city=city,
-                device=parse_device(ua),
-                os_name=parse_os(ua),
-                browser=parse_browser(ua),
-                lang=(payload.lang or "")[:16],
-                screen=(payload.screen or "")[:32],
-                props_json=_compact_props(payload.props),
-            )
-        )
-
-
-def _compact_props(props) -> str:
-    return json.dumps(props or {}, separators=(",", ":"), ensure_ascii=False)[:1024]
+        raise HTTPException(status_code=403, detail="origin not allowed")
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    client_ip = geo.extract_client_ip(request)
+    ignored = ingest.ignored_values(db)
+    rows, pending = ingest.build_rows(
+        events,
+        request_headers=headers,
+        client_ip=client_ip,
+        ignored=ignored,
+        own_hosts={request.url.hostname or ""},
+    )
+    ingest.insert_rows(rows)
+    for ip, sid, ip_hash in pending:
+        background.add_task(ingest.enrich_and_backfill, ip, sid, ip_hash, headers)
+    return Response(status_code=204, headers={"cache-control": "no-store"})
 
 
 @app.options("/collect", status_code=204)
-def collect_preflight(response: Response) -> None:
+def collect_preflight() -> Response:
+    response = Response(status_code=204)
     response.headers["access-control-allow-origin"] = "*"
     response.headers["access-control-allow-methods"] = "POST, OPTIONS"
     response.headers["access-control-allow-headers"] = "content-type"
     response.headers["access-control-max-age"] = "86400"
+    return response
 
 
-# ---------- dashboard ----------
+# --------------------------------------------------------------------------- #
+# auth
+# --------------------------------------------------------------------------- #
 
 
-def check_auth(request: Request) -> bool:
-    if not ADMIN_TOKEN:
-        return True
-    return request.cookies.get("pa_auth") == ADMIN_TOKEN
+@app.post("/api/login")
+def login(request: Request, payload: dict = Body(...)) -> JSONResponse:
+    candidate = str(payload.get("token") or "")
+    if not auth.token_matches(candidate):
+        raise HTTPException(status_code=401, detail="invalid token")
+    response = JSONResponse({"ok": True, "auth": auth.auth_enabled()})
+    auth.set_auth_cookie(response, request)
+    return response
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.post("/api/logout")
+def logout() -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    auth.clear_auth_cookie(response)
+    return response
+
+
+@app.get("/api/me")
+def me(request: Request) -> dict:
+    return {
+        "authenticated": auth.is_authenticated(request),
+        "auth_enabled": auth.auth_enabled(),
+        "site_key": SITE_KEY,
+        "now": utcnow().isoformat(),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# dashboard API
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/overview")
 def overview(
     request: Request,
-    range: str = "today",
-    me: int = 0,
-    source: str = "",
-    country: str = "",
-    device: str = "",
-    path: str = "",
-    e: int = 0,
-    db=Depends(get_db),
-):
-    if not check_auth(request):
-        return login_page(error=bool(e))
-    return render_overview(
-        db,
-        range_key=range,
-        show_me=bool(me),
-        source=source,
-        country=country,
-        device=device,
-        path=path,
+    page: int = 1,
+    per_page: int = 30,
+    db: Session = Depends(get_db),
+) -> dict:
+    auth.require_auth(request)
+    filters = analytics.Filters.from_query(request.query_params)
+    return analytics.overview(db, filters, page=page, per_page=per_page)
+
+
+@app.get("/api/session/{sid}")
+def session_detail(sid: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    payload = analytics.session_detail(db, sid)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return payload
+
+
+@app.delete("/api/session/{sid}")
+def session_delete(sid: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    return {"deleted": analytics.delete_session(db, sid)}
+
+
+@app.get("/api/visitor/{vid}")
+def visitor_detail(vid: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    payload = analytics.visitor_detail(db, vid)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="visitor not found")
+    return payload
+
+
+@app.delete("/api/visitor/{vid}")
+def visitor_delete(vid: str, request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    return {"deleted": analytics.delete_visitor(db, vid)}
+
+
+@app.get("/api/ignore")
+def ignore_list(request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    return {"items": analytics.list_ignored(db)}
+
+
+@app.post("/api/ignore")
+def ignore_add(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    sid = str(payload.get("sid") or "")
+    kind = str(payload.get("kind") or "")
+    value = str(payload.get("value") or "")
+    label = str(payload.get("label") or "")
+    added: list[dict] = []
+    if sid:
+        session = db.query(Event).filter(Event.session_id == sid).first()
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        for ident_kind, ident_value in (("visitor", session.visitor), ("ip_hash", session.ip_hash)):
+            if ident_value:
+                added.append(analytics.add_ignored(db, ident_kind, ident_value, label))
+    else:
+        if not value:
+            raise HTTPException(status_code=422, detail="value required")
+        added.append(analytics.add_ignored(db, kind, value, label))
+    return {"items": added, "updated": sum(item["updated"] for item in added)}
+
+
+@app.delete("/api/ignore/{ident}")
+def ignore_delete(ident: int, request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    if not analytics.remove_ignored(db, ident):
+        raise HTTPException(status_code=404, detail="not found")
+    return {"ok": True}
+
+
+@app.get("/api/cleanup/preview")
+def cleanup_preview(request: Request, db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    return analytics.cleanup_preview(db)
+
+
+@app.post("/api/cleanup")
+def cleanup(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)) -> dict:
+    auth.require_auth(request)
+    scope = str(payload.get("scope") or "")
+    confirm = str(payload.get("confirm") or "")
+    try:
+        return {"preview": analytics.cleanup(db, scope, confirm)}
+    except PermissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/export/sessions.csv")
+def export_sessions(request: Request, db: Session = Depends(get_db)) -> Response:
+    auth.require_auth(request)
+    filters = analytics.Filters.from_query(request.query_params)
+    body = analytics.export_sessions_csv(db, filters)
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"content-disposition": 'attachment; filename="sessions.csv"'},
     )
 
 
-@app.get("/session/{sid}", response_class=HTMLResponse)
-def session_detail(request: Request, sid: str, db=Depends(get_db)):
-    if not check_auth(request):
-        return RedirectResponse("/", status_code=303)
-    return render_session(db, sid)
+@app.get("/api/export/events.json")
+def export_events(request: Request, db: Session = Depends(get_db)) -> Response:
+    auth.require_auth(request)
+    filters = analytics.Filters.from_query(request.query_params)
+    body = analytics.export_events_json(db, filters)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"content-disposition": 'attachment; filename="events.json"'},
+    )
 
 
-@app.get("/visitor/{vid}", response_class=HTMLResponse)
-def visitor_detail(request: Request, vid: str, db=Depends(get_db)):
-    if not check_auth(request):
-        return RedirectResponse("/", status_code=303)
-    return render_visitor(db, vid)
+# --------------------------------------------------------------------------- #
+# SPA
+# --------------------------------------------------------------------------- #
+
+if (STATIC_DIR / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+BUILD_HINT = """<!doctype html><meta charset="utf-8"><title>portfolio-analytics</title>
+<body style="font:14px/1.5 ui-monospace,monospace;background:#0c0a09;color:#f3efe8;padding:40px">
+<h1 style="font-size:18px">dashboard not built</h1>
+<p>Соберите SPA: <code>cd web &amp;&amp; npm ci &amp;&amp; npm run build</code> (статика ляжет в <code>app/static</code>).</p>
+<p>API при этом работает: <a href="/api/me" style="color:#cf6234">/api/me</a>, <code>/collect</code>, <code>/health</code>.</p>
+</body>"""
 
 
-@app.post("/wipe")
-async def wipe(request: Request, db=Depends(get_db)):
-    if not check_auth(request):
-        return RedirectResponse("/", status_code=303)
-    form = parse_qs((await request.body()).decode("utf-8", "replace"))
-    if (form.get("confirm") or [""])[0] != "DELETE":
-        return RedirectResponse("/?range=today", status_code=303)
-    wipe_events(db)
-    return RedirectResponse("/?range=today", status_code=303)
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def spa(full_path: str) -> Response:
+    if full_path.startswith(("api/", "collect", "health")):
+        raise HTTPException(status_code=404, detail="not found")
+    candidate = (STATIC_DIR / full_path).resolve()
+    if full_path and candidate.is_file() and STATIC_DIR in candidate.parents:
+        return FileResponse(candidate)
+    index = STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(index, media_type="text/html", headers={"cache-control": "no-store"})
+    return HTMLResponse(BUILD_HINT, status_code=200)
 
 
-@app.post("/login")
-async def login(request: Request):
-    # Manual urlencoded parsing: avoids the python-multipart dependency for one input field.
-    form = parse_qs((await request.body()).decode("utf-8", "replace"))
-    token = (form.get("token") or [""])[0]
-    if ADMIN_TOKEN and token.strip() == ADMIN_TOKEN:
-        response = RedirectResponse("/", status_code=303)
-        response.set_cookie(
-            "pa_auth", ADMIN_TOKEN, httponly=True, secure=True, samesite="lax", max_age=60 * 60 * 24 * 30
-        )
-        return response
-    # Wrong or missing token: back to the login form (no JSON 403 dead end).
-    return RedirectResponse("/?e=1", status_code=303)
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots() -> str:
+    return "User-agent: *\nDisallow: /\n"

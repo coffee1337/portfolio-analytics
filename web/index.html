@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="dark light" />
+    <title>coffee1337 / analytics</title>
+    <script>
+      try {
+        var theme = localStorage.getItem("et-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+        var lang = localStorage.getItem("pa-lang");
+        if (lang === "ru" || lang === "en") document.documentElement.lang = lang;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
