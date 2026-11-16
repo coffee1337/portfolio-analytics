@@ -33,7 +33,7 @@ ENGAGED_SCROLL = 50
 ENGAGED_SECTIONS = 3
 GAP_CAP = 60  # seconds; a forgotten background tab must not add hours
 
-RANGE_KEYS = ("today", "yesterday", "7d", "30d", "90d", "all")
+RANGE_KEYS = ("today", "yesterday", "7d", "30d", "90d", "all", "custom")
 PROJECT_IDS = (
     "ai-python-mentor",
     "ngie",
@@ -236,17 +236,20 @@ def range_bounds(db: Session, filters: Filters) -> tuple[datetime, datetime, dat
     elif key == "yesterday":
         start = today_msk - timedelta(days=1)
         end = today_msk
-    elif key == "all":
-        earliest = db.scalar(select(func.min(Event.ts)))
-        start = as_utc(earliest) if earliest else today_msk - timedelta(days=29)
     elif filters.date_from and filters.date_to:
         parsed_from = _parse_day(filters.date_from)
         parsed_to = _parse_day(filters.date_to)
         if parsed_from and parsed_to:
             start = parsed_from
             end = min(parsed_to + timedelta(days=1), now)
+        elif key == "all":
+            earliest = db.scalar(select(func.min(Event.ts)))
+            start = as_utc(earliest) if earliest else today_msk - timedelta(days=29)
         else:
             start = now - timedelta(days=7)
+    elif key == "all":
+        earliest = db.scalar(select(func.min(Event.ts)))
+        start = as_utc(earliest) if earliest else today_msk - timedelta(days=29)
     else:
         days = int(key[:-1]) if key[:-1].isdigit() else 7
         start = today_msk - timedelta(days=days - 1)
@@ -283,12 +286,15 @@ def load_rows(
     *,
     show_me: bool,
     show_bots: bool,
+    where: Any | None = None,
 ) -> tuple[list[dict], bool]:
     query: Select = (
         select(*EVENT_COLUMNS)
         .where(Event.ts >= start, Event.ts < end)
         .order_by(Event.ts.asc(), Event.id.asc())
     )
+    if where is not None:
+        query = query.where(where)
     if not show_me:
         query = query.where(Event.is_me.is_(False))
     if not show_bots:
@@ -1230,14 +1236,14 @@ def _city_rows(sessions: list[SessionRow], limit: int = 14) -> list[dict]:
 
 
 def load_session(db: Session, sid: str) -> tuple[SessionRow | None, list[dict]]:
-    rows, _ = load_rows(
+    target, _ = load_rows(
         db,
         datetime(2000, 1, 1, tzinfo=timezone.utc),
         utcnow() + timedelta(days=1),
         show_me=True,
         show_bots=True,
+        where=Event.session_id == sid,
     )
-    target = [row for row in rows if row["session_id"] == sid]
     if not target:
         return None, []
     sessions = build_sessions(target)
@@ -1288,8 +1294,8 @@ def visitor_detail(db: Session, vid: str) -> dict | None:
         utcnow() + timedelta(days=1),
         show_me=True,
         show_bots=True,
+        where=Event.visitor == vid,
     )
-    rows = [row for row in rows if row["visitor"] == vid]
     if not rows:
         return None
     sessions = build_sessions(rows)

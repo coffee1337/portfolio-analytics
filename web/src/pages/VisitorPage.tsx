@@ -8,7 +8,7 @@ import type { VisitorDetail } from "../lib/types";
 import { Badge, Stat } from "../components/ui";
 
 export function VisitorPage({ vid }: { vid: string }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [data, setData] = useState<VisitorDetail | null>(null);
   const [error, setError] = useState("");
 
@@ -84,7 +84,7 @@ export function VisitorPage({ vid }: { vid: string }) {
         <div className="card space-y-3 p-4">
           <div className="kicker">{t("detail.metrics")}</div>
           <Stat label={t("detail.sessions")} value={fmtNum(v.sessions)} />
-          <Stat label={t("detail.totalTime")} value={fmtDuration(v.active_sec)} />
+          <Stat label={t("detail.totalTime")} value={fmtDuration(v.active_sec, lang)} />
           <Stat label={t("detail.firstSeen")} value={fmtDate(v.first_seen)} />
           <Stat label={t("detail.lastSeen")} value={fmtDate(v.last_seen)} />
         </div>
@@ -144,7 +144,7 @@ export function VisitorPage({ vid }: { vid: string }) {
                 <span>
                   {flag(session.country)} {session.city || session.country || "—"}
                 </span>
-                <span>{fmtDuration(session.duration)}</span>
+                <span>{fmtDuration(session.duration, lang)}</span>
                 <span>{t("sessions.pages", { count: session.pageviews })}</span>
                 <span>{Math.round(session.max_scroll)}%</span>
                 {session.goals.length ? <Badge tone="ok">{session.goals.length}</Badge> : null}

@@ -289,6 +289,18 @@ def test_filters_use_matching_keys(client):
     assert client.get("/api/overview?range=today&country=DE").json()["sessions"]["total"] == 0
 
 
+def test_custom_date_range(client):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    send(client, session="s-custom", visitor="visitorcustom01")
+    today = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%Y-%m-%d")
+    inside = client.get(f"/api/overview?range=custom&from={today}&to={today}").json()
+    assert inside["sessions"]["total"] == 1
+    outside = client.get("/api/overview?range=custom&from=2020-01-01&to=2020-01-02").json()
+    assert outside["sessions"]["total"] == 0
+
+
 def test_session_and_visitor_detail(client):
     now = time.time()
     collect(

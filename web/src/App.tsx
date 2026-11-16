@@ -290,11 +290,13 @@ export default function App() {
 
                 <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 pb-6">
                   <span className="mono text-[9px] text-ink-faint">
-                    {new Date(data.meta.generated_at).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" })} MSK ·
-                    данные обновляются без перезагрузки
+                    {new Date(data.meta.generated_at).toLocaleTimeString(lang === "ru" ? "ru-RU" : "en-GB", {
+                      timeZone: "Europe/Moscow",
+                    })}{" "}
+                    MSK · {t("footer.note")}
                   </span>
                   <span className="mono text-[9px] text-ink-faint">
-                    сырые IP не хранятся · маска + hmac
+                    {t("footer.privacy")}
                   </span>
                 </footer>
               </>

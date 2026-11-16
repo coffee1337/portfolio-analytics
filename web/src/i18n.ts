@@ -286,6 +286,9 @@ const ru: Dict = {
   "event.exit": "выход",
   "event.goal": "цель",
 
+  "footer.note": "данные обновляются без перезагрузки",
+  "footer.privacy": "сырые ip не хранятся · маска + hmac",
+
   "data.title": "данные и экспорт",
   "data.export": "экспорт (с текущими фильтрами)",
   "data.csv": "скачать csv (сессии)",
@@ -615,6 +618,9 @@ const en: Dict = {
   "event.ping": "heartbeat",
   "event.exit": "exit",
   "event.goal": "goal",
+
+  "footer.note": "data refreshes without a page reload",
+  "footer.privacy": "raw ips are never stored · mask + hmac",
 
   "data.title": "data & export",
   "data.export": "export (current filters)",

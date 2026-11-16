@@ -53,7 +53,7 @@ export function KpiGrid({
   onEngaged: () => void;
   engagedActive: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   return (
     <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
       <KpiCard
@@ -82,9 +82,9 @@ export function KpiGrid({
       />
       <KpiCard
         label={t("kpi.duration")}
-        value={fmtDuration(kpi.duration.value)}
+        value={fmtDuration(kpi.duration.value, lang)}
         delta={kpi.duration.delta}
-        sub={t("kpi.duration.sub", { max: fmtDuration(kpi.duration.max) })}
+        sub={t("kpi.duration.sub", { max: fmtDuration(kpi.duration.max, lang) })}
       />
       <KpiCard
         label={t("kpi.pageviews")}

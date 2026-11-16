@@ -39,7 +39,7 @@ export function Header({
 
   const applyDates = () => {
     if (!from || !to) return;
-    onFilters({ from, to, range: filters.range === "today" ? "7d" : filters.range });
+    onFilters({ from, to, range: "custom" });
     setOpenDates(false);
   };
 

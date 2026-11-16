@@ -18,14 +18,15 @@ export function fmtDelta(value: number | null | undefined): { text: string; tone
   return { text: `${sign}${rounded}%`, tone };
 }
 
-export function fmtDuration(seconds: number | undefined | null): string {
+export function fmtDuration(seconds: number | undefined | null, lang = "ru"): string {
   const total = Math.max(0, Math.round(Number(seconds ?? 0)));
-  if (total < 60) return `${total}с`;
+  const units = lang === "ru" ? { s: "с", m: "м", h: "ч" } : { s: "s", m: "m", h: "h" };
+  if (total < 60) return `${total}${units.s}`;
   const minutes = Math.floor(total / 60);
   const rest = total % 60;
-  if (minutes < 60) return rest ? `${minutes}м ${rest}с` : `${minutes}м`;
+  if (minutes < 60) return rest ? `${minutes}${units.m} ${rest}${units.s}` : `${minutes}${units.m}`;
   const hours = Math.floor(minutes / 60);
-  return `${hours}ч ${minutes % 60}м`;
+  return `${hours}${units.h} ${minutes % 60}${units.m}`;
 }
 
 export function fmtClock(iso: string): string {
@@ -84,11 +85,12 @@ export function countryName(code: string | undefined, lang: string): string {
   }
 }
 
-export function fmtGap(seconds: number): string {
+export function fmtGap(seconds: number, lang = "ru"): string {
   if (!seconds) return "";
-  if (seconds < 60) return `+${seconds}с`;
-  if (seconds < 3600) return `+${Math.round(seconds / 60)}м`;
-  return `+${(seconds / 3600).toFixed(1)}ч`;
+  const units = lang === "ru" ? { s: "с", m: "м", h: "ч" } : { s: "s", m: "m", h: "h" };
+  if (seconds < 60) return `+${seconds}${units.s}`;
+  if (seconds < 3600) return `+${Math.round(seconds / 60)}${units.m}`;
+  return `+${(seconds / 3600).toFixed(1)}${units.h}`;
 }
 
 export function shortPath(path: string): string {

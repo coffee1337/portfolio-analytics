@@ -25,7 +25,7 @@ export function Chart({
   onMetric: (metric: Metric) => void;
   conversionRate: number;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [mode, setMode] = useState<"area" | "bars">("area");
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -56,7 +56,7 @@ export function Chart({
 
 
   const labelEvery = Math.max(1, Math.ceil(points.length / 12));
-  const format = (value: number) => (metric === "avg_sec" ? fmtDuration(value) : fmtNum(value));
+  const format = (value: number) => (metric === "avg_sec" ? fmtDuration(value, lang) : fmtNum(value, lang));
 
   function handleMove(event: MouseEvent<SVGSVGElement>) {
     const rect = svgRef.current?.getBoundingClientRect();

@@ -177,7 +177,7 @@ export function SessionPage({ sid }: { sid: string }) {
       <div className="mb-4">
         <div className="kicker mb-1">§S / session</div>
         <h1 className="font-display text-[26px] leading-none tracking-tight md:text-[32px]">
-          {fmtDateTime(s.start)} · {fmtDuration(s.duration)}
+          {fmtDateTime(s.start)} · {fmtDuration(s.duration, lang)}
         </h1>
         <div className="mono mt-2 flex flex-wrap items-center gap-2 text-[10px] text-ink-faint">
           <span className="truncate">{s.sid}</span>
@@ -238,7 +238,7 @@ export function SessionPage({ sid }: { sid: string }) {
 
       <div className="card mt-2 flex flex-wrap items-center gap-x-6 gap-y-2 p-4">
         <Stat label={t("detail.start")} value={fmtClock(s.start)} />
-        <Stat label={t("detail.duration")} value={fmtDuration(s.duration)} />
+        <Stat label={t("detail.duration")} value={fmtDuration(s.duration, lang)} />
         <Stat label={t("detail.events")} value={data.events.length} />
         <Stat label={t("sessions.pages")} value={s.pageviews} />
         <div className="flex flex-wrap items-center gap-1">
@@ -272,7 +272,7 @@ export function SessionPage({ sid }: { sid: string }) {
                 />
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="mono text-[10px] text-ink-dim">{fmtClock(event.ts)}</span>
-                  {event.gap ? <span className="mono text-[9px] text-ink-faint">{fmtGap(event.gap)}</span> : null}
+                  {event.gap ? <span className="mono text-[9px] text-ink-faint">{fmtGap(event.gap, lang)}</span> : null}
                   <span className="pill pill--sm" style={{ color: tagColor(event.name), borderColor: "currentColor" }}>
                     {t(`event.${event.name}`) === `event.${event.name}` ? event.name : t(`event.${event.name}`)}
                   </span>

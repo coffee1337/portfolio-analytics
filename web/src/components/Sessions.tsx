@@ -66,7 +66,7 @@ export function SessionsFeed({
   onMore: () => void;
   loadingMore: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const remaining = Math.max(0, total - items.length);
 
   return (
@@ -154,7 +154,7 @@ export function SessionsFeed({
                       <div className="mono flex gap-2 text-[9px] text-ink-faint">
                         <span>{t("sessions.pages", { count: item.pageviews })}</span>
                         <span>{t("sessions.scroll", { value: Math.round(item.max_scroll) })}</span>
-                        <span style={{ color: "var(--ink-dim)" }}>{fmtDuration(item.duration)}</span>
+                        <span style={{ color: "var(--ink-dim)" }}>{fmtDuration(item.duration, lang)}</span>
                       </div>
                     </td>
                     <td>
@@ -186,7 +186,7 @@ export function SessionsFeed({
                   <div className="text-right">
                     <Badges item={item} />
                     <div className="mono mt-1 text-[10px]" style={{ color: "var(--accent)" }}>
-                      {fmtDuration(item.duration)}
+                      {fmtDuration(item.duration, lang)}
                     </div>
                   </div>
                 </div>
