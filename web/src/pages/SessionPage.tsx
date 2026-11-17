@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { useI18n } from "../i18n";
 import { api } from "../lib/api";
-import { countryName, flag, fmtClock, fmtDate, fmtDuration } from "../lib/format";
+import { countryName, flag, fmtClock, fmtDate, fmtDuration, pluralize } from "../lib/format";
 import { navigate } from "../lib/hooks";
 import type { SessionDetail } from "../lib/types";
 import { SessionTimeline } from "../components/SessionTimeline";
@@ -123,7 +123,14 @@ export function SessionPage({ sid }: { sid: string }) {
           >
             {session.visitor}
           </a>
-          <Stat label={t("detail.sessions")} value={t("detail.visits", { count: session.visit_index })} />
+          <Stat
+            label={t("detail.sessions")}
+            value={`${data.visitor.sessions} ${pluralize(data.visitor.sessions, lang, {
+              one: t("detail.visit.one"),
+              few: t("detail.visit.few"),
+              many: t("detail.visit.many"),
+            })}`}
+          />
           <Stat label={t("detail.ip")} value={session.ip_masked || "—"} />
           <Stat label={t("detail.isp")} value={session.isp || "—"} hint={session.asn} />
         </div>
@@ -169,7 +176,7 @@ export function SessionPage({ sid }: { sid: string }) {
       <div className="card mt-3.5 flex flex-wrap items-center gap-x-8 gap-y-3 p-5 md:mt-4">
         <Stat label={t("detail.duration")} value={fmtDuration(session.duration, lang)} />
         <Stat label={t("detail.events")} value={data.events.length} />
-        <Stat label={t("sessions.pages")} value={session.pageviews} />
+        <Stat label={t("sessions.pages.short")} value={session.pageviews} />
         <Stat label={t("detail.maxScroll")} value={`${Math.round(session.max_scroll)}%`} />
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="kicker mr-1">{t("detail.goals")}</span>

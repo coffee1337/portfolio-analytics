@@ -1056,7 +1056,8 @@ def goals_breakdown(sessions: list[SessionRow]) -> list[dict]:
             if goal == "contact":
                 topics[str(props.get("topic") or "other")] += 1
             if goal == "social":
-                networks[str(props.get("network") or "other")] += 1
+                network = str(props.get("network") or props.get("kind") or "other")
+                networks["other" if network == "social" else network] += 1
             if goal == "entry_cta":
                 cards[str(props.get("card") or "other")] += 1
     total_sessions = len(sessions)
@@ -1309,15 +1310,15 @@ def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 3
         "live": sum(1 for session in filtered if session.live),
         "bounce": sum(1 for session in filtered if session.bounce),
     }
-    sessions = [session for session in filtered if tab_match(session, filters.tab)]
-    counters = lifetime_session_index(db, sessions)
-    current = summarise(sessions)
+    # The §05 tab narrows only the visit feed below; §01–§04 always describe the
+    # full filtered period, otherwise a tab click silently rewrites every KPI.
+    current = summarise(filtered)
 
     prev_rows, _ = load_rows(db, prev_start, prev_end, show_me=filters.show_me, show_bots=filters.show_bots)
     prev_sessions = [
         session
         for session in build_sessions(prev_rows)
-        if session_matches(session, filters) and tab_match(session, filters.tab)
+        if session_matches(session, filters)
     ]
     previous = summarise(prev_sessions) if prev_sessions else None
     show_delta = filters.range_key != "all" and previous is not None
@@ -1382,19 +1383,21 @@ def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 3
         session for session in all_sessions if session.live and not (session.is_bot and not filters.show_bots)
     ]
 
-    entries, views = pages_breakdown(sessions)
-    interactive = interactive_stats(sessions)
-    series = timeseries(sessions, start, end, bucket)
+    entries, views = pages_breakdown(filtered)
+    interactive = interactive_stats(filtered)
+    series = timeseries(filtered, start, end, bucket)
     prev_series = prev_timeseries(prev_sessions, prev_start, prev_end, bucket)
-    funnel_data = funnel(sessions)
-    heatmap = heatmap_matrix(sessions)
-    projects_rows = project_matrix(sessions)
-    sources_rows = breakdown(sessions, "source", 14)
-    total = len(sessions)
+    funnel_data = funnel(filtered)
+    heatmap = heatmap_matrix(filtered)
+    projects_rows = project_matrix(filtered)
+    sources_rows = breakdown(filtered, "source", 14)
     page = max(1, int(page or 1))
     per_page = max(5, min(100, int(per_page or 30)))
     offset = (page - 1) * per_page
-    feed = sessions[offset : offset + per_page]
+    tab_sessions = [session for session in filtered if tab_match(session, filters.tab)]
+    total = len(tab_sessions)
+    feed = tab_sessions[offset : offset + per_page]
+    counters = lifetime_session_index(db, feed)
 
     return {
         "meta": {
@@ -1415,7 +1418,7 @@ def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 3
             "events_5min": sum(
                 1 for session in all_sessions for row in session.events if (utcnow() - row["ts"]) <= LIVE_WINDOW
             ),
-            "total_sessions": total,
+            "total_sessions": len(filtered),
             "tab": filters.tab,
         },
         "kpi": kpi,
@@ -1425,34 +1428,34 @@ def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 3
         "funnel": funnel_data,
         "heatmap": heatmap["cells"],
         "heatmap_max": heatmap["max"],
-        "insights": insights_block(sessions, projects_rows, sources_rows, funnel_data, series, heatmap),
+        "insights": insights_block(filtered, projects_rows, sources_rows, funnel_data, series, heatmap),
         "projects": projects_rows,
-        "goals": goals_breakdown(sessions),
+        "goals": goals_breakdown(filtered),
         "stack": interactive["stack"],
         "stack_modes": interactive["stack_modes"],
         "assistant": interactive["assistant"],
         "cmdk": interactive["cmdk"],
         "acquisition": {
             "sources": sources_rows,
-            "utm": _utm_rows(sessions),
+            "utm": _utm_rows(filtered),
         },
         "geo": {
-            "countries": breakdown(sessions, "country", 14),
-            "cities": _city_rows(sessions),
-            "isps": isp_breakdown(sessions),
+            "countries": breakdown(filtered, "country", 14),
+            "cities": _city_rows(filtered),
+            "isps": isp_breakdown(filtered),
         },
         "devices": {
-            "types": breakdown(sessions, "device"),
-            "os": breakdown(sessions, "os_name"),
-            "browsers": breakdown(sessions, "browser"),
-            "screens": breakdown(sessions, "screen"),
+            "types": breakdown(filtered, "device"),
+            "os": breakdown(filtered, "os_name"),
+            "browsers": breakdown(filtered, "browser"),
+            "screens": breakdown(filtered, "screen"),
         },
         "preferences": {
-            "languages": languages(sessions),
-            "site_langs": site_langs(sessions),
-            "themes": themes(sessions),
+            "languages": languages(filtered),
+            "site_langs": site_langs(filtered),
+            "themes": themes(filtered),
         },
-        "clicks": clicks_breakdown(sessions),
+        "clicks": clicks_breakdown(filtered),
         "paths": {"entry": entries, "all": views},
         "sessions": {
             "total": total,

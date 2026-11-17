@@ -368,6 +368,15 @@ export function EventIcon({ name, ...props }: IconProps & { name: string }) {
       </Glyph>
     );
   }
+  if (name === "project_select") {
+    return (
+      <Glyph {...props}>
+        <path d="M3.6 2.6h6.2a1 1 0 0 1 1 1v6.2" />
+        <path d="M3.6 2.6v9.8h9.8" />
+        <path d="M10.2 7.4 13.4 12l-2.2.5-1 2z" />
+      </Glyph>
+    );
+  }
   if (name.startsWith("project")) {
     return <GoalIcon goal="project" {...props} />;
   }

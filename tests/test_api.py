@@ -465,6 +465,11 @@ def test_health_and_spa_fallback(client):
     assert client.get("/health").json()["status"] == "ok"
     page = client.get("/session/whatever")
     assert page.status_code == 200
+    robots = client.get("/robots.txt")
+    assert robots.status_code == 200
+    assert "Disallow: /" in robots.text
+    assert "<html" not in robots.text.lower()
+    assert robots.headers["content-type"].startswith("text/plain")
 
 
 # ------------------------------ auth ---------------------------------------- #
@@ -600,6 +605,8 @@ def test_server_search_and_tabs(client):
     engaged = client.get("/api/overview?range=today&tab=engaged").json()
     assert engaged["sessions"]["total"] == 0
     assert engaged["sessions"]["counts"]["all"] == 2
+    # the §05 tab narrows the feed only — top KPIs still describe the whole period
+    assert engaged["kpi"]["visitors"]["value"] == 2
 
 
 def test_dow_hour_and_hide_dc_filters(client):
@@ -647,6 +654,8 @@ def test_clicks_and_page_time(client):
     assert any("hire" in row["key"] for row in clicks["buttons"])
     goals = {row["key"]: row for row in payload["goals"]}
     assert goals["social"]["sessions"] == 1
+    # legacy click events carry kind=telegram, not network
+    assert goals["social"]["networks"] == {"telegram": 1}
     pages = {row["key"]: row for row in payload["paths"]["all"]}
     assert pages["/projects/knn/"]["avg_sec"] > 0
     projects = {row["id"]: row for row in payload["projects"]}

@@ -89,8 +89,13 @@ export function Chart({
   const plotWidth = Math.max(80, width - GUTTER - 8);
   const plotHeight = HEIGHT - PAD_TOP - PAD_BOTTOM;
   const step = points.length > 1 ? plotWidth / (points.length - 1) : 0;
-  const barWidth = points.length ? Math.max(2, plotWidth / points.length - 3) : 0;
-  const x = (index: number) => GUTTER + (points.length > 1 ? index * step : plotWidth / 2);
+  const slotWidth = points.length ? plotWidth / points.length : plotWidth;
+  const barWidth = points.length ? Math.min(44, Math.max(2, slotWidth * 0.72)) : 0;
+  const areaX = (index: number) => GUTTER + (points.length > 1 ? index * step : plotWidth / 2);
+  const barCenterX = (index: number) => GUTTER + (index + 0.5) * slotWidth;
+  // bars live inside their own slot, area points sit on the shared x grid
+  const pointX = (index: number) => (mode === "bars" ? barCenterX(index) : areaX(index));
+  const x = areaX;
   const y = (value: number) => PAD_TOP + (1 - value / max) * plotHeight;
 
   const linePath = useMemo(
@@ -113,11 +118,14 @@ export function Chart({
     const prevStep = count > 1 ? plotWidth / (count - 1) : 0;
     return prevValues
       .map((value, index) => {
-        const px = GUTTER + (count > 1 ? index * prevStep : plotWidth / 2);
+        const px =
+          mode === "bars"
+            ? GUTTER + (index + 0.5) * (plotWidth / count)
+            : GUTTER + (count > 1 ? index * prevStep : plotWidth / 2);
         return `${index === 0 ? "M" : "L"}${px.toFixed(1)},${y(value).toFixed(1)}`;
       })
       .join(" ");
-  }, [compare, prevValues, max, width]);
+  }, [compare, prevValues, max, width, mode]);
 
   const ticks = percent
     ? [0, 25, 50, 75, 100]
@@ -139,13 +147,13 @@ export function Chart({
       setHover(0);
       return;
     }
-    const index = Math.round(relative / step);
+    const index = mode === "bars" ? Math.floor(relative / slotWidth) : Math.round(relative / step);
     setHover(Math.min(points.length - 1, Math.max(0, index)));
   }
 
   const tooltipLeft =
     hover !== null
-      ? Math.min(Math.max(8, x(hover) - TOOLTIP_WIDTH / 2), Math.max(8, width - TOOLTIP_WIDTH - 8))
+      ? Math.min(Math.max(8, pointX(hover) - TOOLTIP_WIDTH / 2), Math.max(8, width - TOOLTIP_WIDTH - 8))
       : 0;
 
   const toggleCell = (day: number, hour: number) => {
@@ -347,7 +355,7 @@ export function Chart({
                 values.map((value, index) => (
                   <rect
                     key={index}
-                    x={x(index) - barWidth / 2}
+                    x={barCenterX(index) - barWidth / 2}
                     y={y(value)}
                     width={barWidth}
                     height={Math.max(1, PAD_TOP + plotHeight - y(value))}
@@ -360,15 +368,15 @@ export function Chart({
               {hover !== null && points[hover] && !single ? (
                 <>
                   <line
-                    x1={x(hover)}
-                    x2={x(hover)}
+                    x1={pointX(hover)}
+                    x2={pointX(hover)}
                     y1={PAD_TOP - 6}
                     y2={PAD_TOP + plotHeight}
                     stroke="var(--line-strong)"
                     strokeWidth={1}
                     strokeDasharray="3 3"
                   />
-                  <circle cx={x(hover)} cy={y(values[hover])} r={4} fill="var(--accent)" />
+                  <circle cx={pointX(hover)} cy={y(values[hover])} r={4} fill="var(--accent)" />
                 </>
               ) : null}
             </svg>

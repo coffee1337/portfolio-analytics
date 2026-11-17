@@ -97,3 +97,11 @@ export function shortPath(path: string): string {
   if (!path) return "/";
   return path.length > 32 ? `${path.slice(0, 29)}…` : path;
 }
+
+export function pluralize(count: number, lang: string, forms: { one: string; few: string; many: string }): string {
+  if (lang !== "ru") return count === 1 ? forms.one : forms.many;
+  const rule = new Intl.PluralRules("ru-RU").select(count);
+  if (rule === "one") return forms.one;
+  if (rule === "few") return forms.few;
+  return forms.many;
+}

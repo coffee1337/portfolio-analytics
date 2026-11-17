@@ -12,9 +12,9 @@ export function Funnel({ data }: { data: Overview["funnel"] }) {
   const { t } = useI18n();
   const loader = data.loader;
   const seen = loader.seen ?? loader.complete + loader.skip;
-  // round the pair so the two shares never add up to 101%
-  const completePct = Math.round(loader.complete_pct);
-  const skipPct = Math.max(0, 100 - completePct);
+  // shares come from seen, so an empty loader shows 0% / 0% instead of 0% / 100%
+  const completePct = seen > 0 ? Math.round((loader.complete / seen) * 100) : 0;
+  const skipPct = seen > 0 ? Math.max(0, 100 - completePct) : 0;
 
   return (
     <div className="card flex h-full flex-col p-5 md:p-6">
@@ -104,7 +104,7 @@ export function ProjectsMatrix({
               type="button"
               onClick={() => onPatch({ project: filters.project === row.id ? undefined : row.id })}
               data-active={filters.project === row.id ? "true" : undefined}
-              className="group w-full py-3 text-left transition-colors hover:bg-bg-3"
+              className="filter-row group w-full px-2.5 py-3 text-left"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <div className="min-w-0">

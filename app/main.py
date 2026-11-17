@@ -307,6 +307,11 @@ BUILD_HINT = """<!doctype html><meta charset="utf-8"><title>portfolio-analytics<
 </body>"""
 
 
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots() -> str:
+    return "User-agent: *\nDisallow: /\n"
+
+
 @app.get("/{full_path:path}", response_class=HTMLResponse)
 def spa(full_path: str) -> Response:
     if full_path.startswith(("api/", "collect", "health")):
@@ -320,6 +325,3 @@ def spa(full_path: str) -> Response:
     return HTMLResponse(BUILD_HINT, status_code=200)
 
 
-@app.get("/robots.txt", response_class=PlainTextResponse)
-def robots() -> str:
-    return "User-agent: *\nDisallow: /\n"
