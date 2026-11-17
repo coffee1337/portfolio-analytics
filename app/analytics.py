@@ -155,6 +155,9 @@ class Filters:
     os: str = ""
     browser: str = ""
     path: str = ""
+    entry: str = ""
+    screen: str = ""
+    lang: str = ""
     project: str = ""
     goal: str = ""
     engaged: bool = False
@@ -185,6 +188,9 @@ class Filters:
             os=get("os"),
             browser=get("browser"),
             path=get("path", 255),
+            entry=get("entry", 255),
+            screen=get("screen"),
+            lang=get("lang", 16),
             project=PROJECT_ALIASES.get(get("project").lower(), get("project")),
             goal=get("goal"),
             engaged=flag("engaged"),
@@ -206,6 +212,9 @@ class Filters:
             "os": self.os,
             "browser": self.browser,
             "path": self.path,
+            "entry": self.entry,
+            "screen": self.screen,
+            "lang": self.lang,
             "project": self.project,
             "goal": self.goal,
             "engaged": "1" if self.engaged else "0",
@@ -652,10 +661,14 @@ def session_matches(session: SessionRow, filters: Filters) -> bool:
         return False
     if filters.browser and session.browser.lower() != filters.browser.lower():
         return False
-    if filters.path:
-        wanted = filters.path
-        if wanted not in session.pages and wanted != session.entry_path:
-            return False
+    if filters.entry and session.entry_path != filters.entry:
+        return False
+    if filters.screen and session.screen != filters.screen:
+        return False
+    if filters.lang and not session.lang.lower().startswith(filters.lang.lower()):
+        return False
+    if filters.path and filters.path not in session.pages:
+        return False
     if filters.project and filters.project not in session.projects:
         if not any(project_from_path(page) == filters.project for page in session.pages):
             return False
@@ -799,25 +812,28 @@ def funnel(sessions: list[SessionRow]) -> dict:
     home = [session for session in sessions if session.home]
     loader_complete = sum(1 for session in home if session.loader == "complete")
     loader_skip = sum(1 for session in home if session.loader == "skip")
-    steps = [{"key": "loader", "sessions": loader_complete + loader_skip, "complete": loader_complete, "skip": loader_skip}]
-    previous = len(home)
+    steps = []
     for section in SECTIONS:
-        reached = sum(1 for session in home if section in session.sections)
-        steps.append({"key": section, "sessions": reached})
-        previous = reached
-    steps[0]["sessions"] = steps[0]["sessions"]
+        steps.append({"key": section, "sessions": sum(1 for session in home if section in session.sections)})
     for position, step in enumerate(steps):
         step["share"] = pct(step["sessions"], len(home))
-        step["drop"] = pct(step["sessions"] - steps[position - 1]["sessions"], steps[position - 1]["sessions"]) if position else 0.0
+        step["drop"] = (
+            pct(step["sessions"] - steps[position - 1]["sessions"], steps[position - 1]["sessions"])
+            if position
+            else 0.0
+        )
     return {
         "home_sessions": len(home),
         "loader": {
             "complete": loader_complete,
             "skip": loader_skip,
+            "seen": loader_complete + loader_skip,
             "complete_pct": pct(loader_complete, len(home)),
             "skip_pct": pct(loader_skip, len(home)),
         },
         "steps": steps,
+        "reached_contact": sum(1 for session in home if "contact" in session.sections),
+        "reached_resume": sum(1 for session in home if "resume" in session.sections),
     }
 
 
@@ -1126,6 +1142,12 @@ def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30
 
     entries, views = pages_breakdown(sessions)
     interactive = interactive_stats(sessions)
+    series = timeseries(sessions, start, end, bucket)
+    prev_series = prev_timeseries(prev_sessions, prev_start, prev_end, bucket)
+    funnel_data = funnel(sessions)
+    heatmap = heatmap_matrix(sessions)
+    projects_rows = project_matrix(sessions)
+    sources_rows = breakdown(sessions, "source", 14)
     total = len(sessions)
     page = max(1, int(page or 1))
     per_page = max(5, min(100, int(per_page or 30)))
@@ -1154,16 +1176,20 @@ def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30
         },
         "kpi": kpi,
         "prev": previous,
-        "timeseries": timeseries(sessions, start, end, bucket),
-        "funnel": funnel(sessions),
-        "projects": project_matrix(sessions),
+        "timeseries": series,
+        "prev_timeseries": prev_series,
+        "funnel": funnel_data,
+        "heatmap": heatmap["cells"],
+        "heatmap_max": heatmap["max"],
+        "insights": insights_block(sessions, projects_rows, sources_rows, funnel_data, series, heatmap),
+        "projects": projects_rows,
         "goals": goals_breakdown(sessions),
         "stack": interactive["stack"],
         "stack_modes": interactive["stack_modes"],
         "assistant": interactive["assistant"],
         "cmdk": interactive["cmdk"],
         "acquisition": {
-            "sources": breakdown(sessions, "source", 14),
+            "sources": sources_rows,
             "utm": _utm_rows(sessions),
         },
         "geo": {
@@ -1189,6 +1215,75 @@ def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30
         },
     }
 
+
+
+def heatmap_matrix(sessions: list[SessionRow]) -> dict:
+    """7 weekdays (Mon..Sun) x 24 MSK hours — visits per cell."""
+    cells = [[0] * 24 for _ in range(7)]
+    for session in sessions:
+        local = session.start.astimezone(MSK)
+        cells[local.weekday()][local.hour] += 1
+    return {"cells": cells, "max": max((max(row) for row in cells), default=0)}
+
+
+def prev_timeseries(prev_sessions: list[SessionRow], prev_start: datetime, prev_end: datetime, bucket: str) -> dict:
+    """Same bucket shape as the current period, aligned by index for overlay."""
+    return timeseries(prev_sessions, prev_start, prev_end, bucket)
+
+
+WEEKDAYS_RU = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+
+
+def insights_block(
+    sessions: list[SessionRow],
+    projects: list[dict],
+    sources: list[dict],
+    funnel_data: dict,
+    series: dict,
+    heatmap: dict,
+) -> dict:
+    top_project = next((row for row in projects if row["score"] > 0), None)
+    external = [row for row in sources if row["key"] != "direct"]
+    top_source = external[0] if external else (sources[0] if sources else None)
+
+    home = funnel_data["home_sessions"]
+    reached_contact = funnel_data.get("reached_contact", 0)
+    reached_resume = funnel_data.get("reached_resume", 0)
+    deep_section = "contact" if reached_contact or not reached_resume else "resume"
+    deep_count = reached_contact if deep_section == "contact" else reached_resume
+
+    peak = None
+    points = series.get("points", [])
+    if points:
+        best = max(points, key=lambda point: point["visits"])
+        if series.get("bucket") == "hour":
+            peak = {"kind": "hour", "label": best["label"], "visits": best["visits"]}
+        else:
+            cells = heatmap.get("cells") or []
+            totals = [sum(row) for row in cells]
+            if any(totals):
+                index = totals.index(max(totals))
+                peak = {"kind": "weekday", "label": WEEKDAYS_RU[index], "visits": totals[index]}
+            else:
+                peak = {"kind": "day", "label": best["label"], "visits": best["visits"]}
+
+    return {
+        "project": (
+            {"id": top_project["id"], "score": top_project["score"], "actions": top_project["score"]}
+            if top_project
+            else None
+        ),
+        "source": (
+            {"key": top_source["key"], "sessions": top_source.get("sessions", 0)} if top_source else None
+        ),
+        "deep": {
+            "section": deep_section,
+            "sessions": deep_count,
+            "pct": pct(deep_count, home),
+        },
+        "peak": peak,
+        "sessions": len(sessions),
+    }
 
 def _utm_rows(sessions: list[SessionRow], limit: int = 12) -> list[dict]:
     counter: Counter = Counter()
@@ -1525,21 +1620,22 @@ def cleanup_preview(db: Session) -> dict:
 
 
 def cleanup(db: Session, scope: str, confirm: str = "") -> dict:
+    deleted = 0
     if scope == "all":
         if confirm.strip().upper() != "DELETE":
             raise PermissionError("confirmation required")
-        db.execute(delete(Event))
-        db.execute(delete(IgnoredIdentity))
+        deleted += db.execute(delete(Event)).rowcount or 0
+        deleted += db.execute(delete(IgnoredIdentity)).rowcount or 0
     elif scope == "bots":
-        db.execute(delete(Event).where(Event.is_bot.is_(True)))
+        deleted = db.execute(delete(Event).where(Event.is_bot.is_(True))).rowcount or 0
     elif scope == "me":
-        db.execute(delete(Event).where(Event.is_me.is_(True)))
+        deleted = db.execute(delete(Event).where(Event.is_me.is_(True))).rowcount or 0
     elif scope == "ignored":
-        db.execute(delete(IgnoredIdentity))
+        deleted = db.execute(delete(IgnoredIdentity)).rowcount or 0
     else:
         raise ValueError("unknown scope")
     db.commit()
-    return cleanup_preview(db)
+    return {"deleted": int(deleted), "preview": cleanup_preview(db)}
 
 
 def delete_session(db: Session, sid: str) -> int:

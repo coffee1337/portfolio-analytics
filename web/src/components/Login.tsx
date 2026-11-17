@@ -76,7 +76,7 @@ export function Login({
           <button type="submit" className="btn btn--accent mt-4 w-full" disabled={busy || !token.trim()}>
             {t("login.submit")} →
           </button>
-          <p className="mono mt-4 border-t border-line-2 pt-3 text-[10px] leading-relaxed text-ink-faint">{t("login.hint")}</p>
+          <p className="mono mt-4 border-t border-line-2 pt-3 text-[11.5px] leading-relaxed text-ink-faint">{t("login.hint")}</p>
         </form>
       </div>
     </div>

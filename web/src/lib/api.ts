@@ -41,7 +41,22 @@ export function queryString(filters: Filters, extra: Record<string, string | num
   if (filters.me) params.set("me", "1");
   if (filters.bots) params.set("bots", "1");
   if (filters.engaged) params.set("engaged", "1");
-  for (const key of ["source", "utm", "country", "city", "isp", "device", "os", "browser", "path", "project", "goal"] as const) {
+  for (const key of [
+    "source",
+    "utm",
+    "country",
+    "city",
+    "isp",
+    "device",
+    "os",
+    "browser",
+    "path",
+    "entry",
+    "screen",
+    "lang",
+    "project",
+    "goal",
+  ] as const) {
     const value = filters[key];
     if (value) params.set(key, value);
   }
@@ -76,9 +91,14 @@ export const api = {
   removeIgnore: (id: number) => request<{ ok: boolean }>(`/api/ignore/${id}`, { method: "DELETE" }),
   cleanupPreview: () => request<CleanupPreview>("/api/cleanup/preview"),
   cleanup: (scope: string, confirm = "") =>
-    request<{ preview: CleanupPreview }>("/api/cleanup", {
+    request<{ deleted: number; preview: CleanupPreview }>("/api/cleanup", {
       method: "POST",
       body: JSON.stringify({ scope, confirm }),
+    }),
+  ignoreSelf: (visitor?: string) =>
+    request<{ updated: number; ip_masked: string }>("/api/ignore/self", {
+      method: "POST",
+      body: JSON.stringify({ visitor: visitor || undefined }),
     }),
   exportUrl: (kind: "sessions.csv" | "events.json", filters: Filters) =>
     `/api/export/${kind}?${queryString(filters)}`,

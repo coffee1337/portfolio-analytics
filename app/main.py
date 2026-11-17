@@ -205,6 +205,32 @@ def ignore_add(request: Request, payload: dict = Body(...), db: Session = Depend
     return {"items": added, "updated": sum(item["updated"] for item in added)}
 
 
+@app.post("/api/ignore/self")
+def ignore_self(
+    request: Request,
+    payload: dict | None = Body(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mark the dashboard caller's own IP (and optional visitor) as the owner."""
+    auth.require_auth(request)
+    body = payload or {}
+    client_ip = geo.extract_client_ip(request)
+    ip_hash = geo.hash_ip(client_ip)
+    visitor = str(body.get("visitor") or "").strip()[:40]
+    added: list[dict] = []
+    if ip_hash:
+        added.append(analytics.add_ignored(db, "ip_hash", ip_hash, "Мой IP (из дашборда)"))
+    if visitor:
+        added.append(analytics.add_ignored(db, "visitor", visitor, "Мой браузер (из дашборда)"))
+    if not added:
+        raise HTTPException(status_code=422, detail="client ip is not a public address")
+    return {
+        "items": added,
+        "updated": sum(item["updated"] for item in added),
+        "ip_masked": geo.mask_ip(client_ip),
+    }
+
+
 @app.delete("/api/ignore/{ident}")
 def ignore_delete(ident: int, request: Request, db: Session = Depends(get_db)) -> dict:
     auth.require_auth(request)
@@ -225,7 +251,7 @@ def cleanup(request: Request, payload: dict = Body(...), db: Session = Depends(g
     scope = str(payload.get("scope") or "")
     confirm = str(payload.get("confirm") or "")
     try:
-        return {"preview": analytics.cleanup(db, scope, confirm)}
+        return analytics.cleanup(db, scope, confirm)
     except PermissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:

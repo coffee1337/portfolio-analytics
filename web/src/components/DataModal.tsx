@@ -66,7 +66,7 @@ export function DataModal({
       const result = await api.cleanup(scope, confirm);
       setPreview(result.preview);
       setConfirm("");
-      setMessage(t("data.deleted", { count: result.preview.total }));
+      setMessage(t("data.deleted", { count: result.deleted }));
       if (scope === "ignored" || scope === "all") {
         const next = await api.ignored();
         setIgnored(next.items);
@@ -74,6 +74,23 @@ export function DataModal({
       onChanged();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : t("app.error"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markIp() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api.ignoreSelf();
+      const [nextPreview, nextIgnored] = await Promise.all([api.cleanupPreview(), api.ignored()]);
+      setPreview(nextPreview);
+      setIgnored(nextIgnored.items);
+      setMessage(t("data.markedIp", { ip: result.ip_masked, n: result.updated }));
+      onChanged();
+    } catch {
+      setMessage(t("app.error"));
     } finally {
       setBusy(false);
     }
@@ -104,7 +121,7 @@ export function DataModal({
         </div>
 
         {preview ? (
-          <div className="mono mb-4 border border-line-2 bg-bg px-3 py-2 text-[10px] text-ink-faint">
+          <div className="mono mb-4 border border-line-2 bg-bg px-3 py-2 text-[11.5px] text-ink-faint">
             {t("data.preview", {
               total: preview.total,
               bots: preview.bots,
@@ -129,10 +146,16 @@ export function DataModal({
         <div className="mb-5">
           <div className="kicker mb-2">{t("data.cleanup")}</div>
           <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-3 border border-line-2 px-3 py-2">
+              <span className="text-[13px] text-ink">{t("data.markIp")}</span>
+              <button type="button" className="btn px-2.5 py-1" onClick={markIp} disabled={busy}>
+                ◎ {t("sessions.me")}
+              </button>
+            </div>
             <div className="flex items-center justify-between gap-3 border border-line-2 px-3 py-2">
               <span className="mono text-[11px]">{t("data.bots")}</span>
               <span className="flex items-center gap-2">
-                <span className="mono text-[10px] text-ink-faint">{t("data.rows", { count: preview?.bots ?? 0 })}</span>
+                <span className="mono text-[11.5px] text-ink-faint">{t("data.rows", { count: preview?.bots ?? 0 })}</span>
                 <button type="button" className="btn px-2 py-1" onClick={() => run("bots")} disabled={busy || !preview?.bots}>
                   ×
                 </button>
@@ -141,7 +164,7 @@ export function DataModal({
             <div className="flex items-center justify-between gap-3 border border-line-2 px-3 py-2">
               <span className="mono text-[11px]">{t("data.me")}</span>
               <span className="flex items-center gap-2">
-                <span className="mono text-[10px] text-ink-faint">{t("data.rows", { count: preview?.me ?? 0 })}</span>
+                <span className="mono text-[11.5px] text-ink-faint">{t("data.rows", { count: preview?.me ?? 0 })}</span>
                 <button type="button" className="btn px-2 py-1" onClick={() => run("me")} disabled={busy || !preview?.me}>
                   ×
                 </button>
@@ -150,7 +173,7 @@ export function DataModal({
             <div className="flex items-center justify-between gap-3 border border-line-2 px-3 py-2">
               <span className="mono text-[11px]">{t("data.ignored")}</span>
               <span className="flex items-center gap-2">
-                <span className="mono text-[10px] text-ink-faint">{t("data.rows", { count: preview?.ignored ?? 0 })}</span>
+                <span className="mono text-[11.5px] text-ink-faint">{t("data.rows", { count: preview?.ignored ?? 0 })}</span>
                 <button type="button" className="btn px-2 py-1" onClick={() => run("ignored")} disabled={busy || !preview?.ignored}>
                   ×
                 </button>
@@ -165,10 +188,10 @@ export function DataModal({
             <div className="max-h-[140px] space-y-1 overflow-y-auto scroll-thin">
               {ignored.map((item) => (
                 <div key={item.id} className="flex items-center justify-between gap-2 border-b border-line-2 pb-1">
-                  <span className="mono truncate text-[10px] text-ink-dim">
+                  <span className="mono truncate text-[11.5px] text-ink-dim">
                     {item.kind}: {item.value.slice(0, 16)} {item.label ? `· ${item.label}` : ""}
                   </span>
-                  <button type="button" className="mono text-[10px] text-danger" onClick={() => removeIgnored(item.id)}>
+                  <button type="button" className="mono text-[11.5px] text-danger" onClick={() => removeIgnored(item.id)}>
                     ×
                   </button>
                 </div>
@@ -199,7 +222,7 @@ export function DataModal({
           </div>
         </div>
 
-        {message ? <div className="mono mt-3 text-[10px] text-ink-dim">{message}</div> : null}
+        {message ? <div className="mono mt-3 text-[11.5px] text-ink-dim">{message}</div> : null}
         {!preview && !message ? <Empty>{t("app.loading")}</Empty> : null}
       </div>
     </div>

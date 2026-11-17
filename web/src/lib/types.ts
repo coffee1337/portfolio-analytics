@@ -15,6 +15,9 @@ export interface Filters {
   os?: string;
   browser?: string;
   path?: string;
+  entry?: string;
+  screen?: string;
+  lang?: string;
   project?: string;
   goal?: string;
   engaged?: boolean;
@@ -99,6 +102,14 @@ export interface SessionItem {
   visit_index: number;
 }
 
+export interface Insights {
+  project: { id: string; score: number; actions: number } | null;
+  source: { key: string; sessions: number } | null;
+  deep: { section: string; sessions: number; pct: number };
+  peak: { kind: string; label: string; visits: number } | null;
+  sessions: number;
+}
+
 export interface Overview {
   meta: {
     generated_at: string;
@@ -117,9 +128,15 @@ export interface Overview {
   kpi: Kpi;
   prev: Record<string, number> | null;
   timeseries: { bucket: string; points: Point[] };
+  prev_timeseries: { bucket: string; points: Point[] };
+  heatmap: number[][];
+  heatmap_max: number;
+  insights: Insights;
   funnel: {
     home_sessions: number;
-    loader: { complete: number; skip: number; complete_pct: number; skip_pct: number };
+    loader: { complete: number; skip: number; seen?: number; complete_pct: number; skip_pct: number };
+    reached_contact?: number;
+    reached_resume?: number;
     steps: { key: string; sessions: number; share: number; drop: number; complete?: number; skip?: number }[];
   };
   projects: {

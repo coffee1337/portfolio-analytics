@@ -16,6 +16,7 @@ export function Header({
   onRefresh,
   refreshing,
   onData,
+  onMarkIp,
   onLogout,
   theme,
   onTheme,
@@ -28,6 +29,7 @@ export function Header({
   onRefresh: () => void;
   refreshing: boolean;
   onData: () => void;
+  onMarkIp: () => void;
   onLogout: () => void;
   theme: "dark" | "light";
   onTheme: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -62,7 +64,7 @@ export function Header({
               </a>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               <button type="button" className="btn px-2.5 py-1" onClick={() => setLang(lang === "ru" ? "en" : "ru")} aria-label="language">
                 {lang === "ru" ? "RU" : "EN"}
               </button>
@@ -79,7 +81,7 @@ export function Header({
             <div className="no-scrollbar flex shrink-0 flex-wrap items-center gap-1.5 md:flex-nowrap md:overflow-x-auto md:pb-0.5">
               <span className="flex items-center gap-1.5 pr-1">
                 <span className={`status-dot${meta && meta.live > 0 ? "" : " status-dot--idle"}`} />
-                <span className="mono text-[10px] text-ink-dim">
+                <span className="mono text-[11.5px] text-ink-dim">
                   {meta ? meta.live : 0} {t("header.live")} · {fmtNum(meta?.events_5min ?? 0)} {t("header.events")}
                 </span>
               </span>
@@ -140,7 +142,7 @@ export function Header({
             </div>
 
             <div className="no-scrollbar flex shrink-0 flex-wrap items-center gap-1.5 md:flex-nowrap md:overflow-x-auto md:pb-0.5">
-              <span className="mono hidden items-center gap-1 text-[10px] text-ink-faint md:flex">
+              <span className="mono hidden items-center gap-1 text-[11.5px] text-ink-faint md:flex">
                 {t("header.auto")}:
               </span>
               {[0, 15, 30].map((value) => (
@@ -190,6 +192,15 @@ export function Header({
                   {filters.bots ? t("header.bots.shown") : t("header.bots.hidden")}
                   {meta?.bots_hidden ? ` (${meta.bots_hidden})` : ""}
                 </span>
+              </button>
+              <button
+                type="button"
+                className="pill pill--sm"
+                onClick={onMarkIp}
+                title={t("data.markIp")}
+              >
+                ◎ <span className="hidden xl:inline">{t("data.markIp")}</span>
+                <span className="xl:hidden">IP</span>
               </button>
               <button type="button" className="pill pill--sm" onClick={onData}>
                 ⛁ <span className="hidden sm:inline">{t("header.data")}</span>

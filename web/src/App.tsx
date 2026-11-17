@@ -6,8 +6,9 @@ import { AudienceSection } from "./components/Audience";
 import { Chart } from "./components/Chart";
 import { DataModal } from "./components/DataModal";
 import { IntelligenceSection } from "./components/Intelligence";
-import { KpiGrid } from "./components/Kpi";
+import { KpiSection } from "./components/Kpi";
 import { Login } from "./components/Login";
+import { SessionDrawer } from "./components/SessionDrawer";
 import { SessionsFeed } from "./components/Sessions";
 import { SectionHead } from "./components/ui";
 import { I18nContext, translate } from "./i18n";
@@ -28,6 +29,9 @@ const FILTER_KEYS = [
   "os",
   "browser",
   "path",
+  "entry",
+  "screen",
+  "lang",
   "project",
   "goal",
 ] as const;
@@ -75,12 +79,14 @@ export default function App() {
   const filters = useMemo(() => readFilters(params), [params]);
   const [data, setData] = useState<Overview | null>(null);
   const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
   const [perPage, setPerPage] = useState(30);
   const [auto, setAuto] = useState(15);
   const [reloadKey, setReloadKey] = useState(0);
   const [metric, setMetric] = useState<Metric>("visits");
   const [dataOpen, setDataOpen] = useState(false);
+  const [drawerSid, setDrawerSid] = useState<string | null>(null);
   const path = usePath();
 
   const t = useCallback(
@@ -132,6 +138,12 @@ export default function App() {
 
   useInterval(() => setReloadKey((value) => value + 1), auto > 0 && authed ? auto * 1000 : null);
 
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
   const patchFilters = useCallback(
     (patch: Partial<Filters>) => {
       const next = { ...filters, ...patch };
@@ -171,14 +183,21 @@ export default function App() {
     }
   }, []);
 
-  const i18n = useMemo(
-    () => ({ lang, setLang, t }),
-    [lang, setLang, t],
-  );
+  const markMyIp = useCallback(async () => {
+    try {
+      const result = await api.ignoreSelf();
+      setToast(t("data.markedIp", { ip: result.ip_masked, n: result.updated }));
+      setReloadKey((value) => value + 1);
+    } catch {
+      setToast(t("app.error"));
+    }
+  }, [t]);
+
+  const i18n = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t]);
 
   if (authed === null) {
     return (
-      <div className="mono flex min-h-screen items-center justify-center text-[11px] text-ink-faint">
+      <div className="flex min-h-screen items-center justify-center text-[13px] text-ink-faint">
         {t("app.loading")}
       </div>
     );
@@ -207,32 +226,39 @@ export default function App() {
   return (
     <I18nContext.Provider value={i18n}>
       <div className="grain" />
+      <Header
+        meta={data?.meta ?? null}
+        filters={filters}
+        onFilters={patchFilters}
+        auto={auto}
+        onAuto={setAuto}
+        onRefresh={() => setReloadKey((value) => value + 1)}
+        refreshing={loading}
+        onData={() => setDataOpen(true)}
+        onMarkIp={() => void markMyIp()}
+        onLogout={() => void logout()}
+        theme={theme}
+        onTheme={toggleTheme}
+      />
+
+      {toast ? (
+        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 border border-line bg-bg-2 px-4 py-2 text-[13px] shadow-xl">
+          {toast}
+        </div>
+      ) : null}
+
       {sessionMatch ? (
         <SessionPage sid={decodeURIComponent(sessionMatch[1])} />
       ) : visitorMatch ? (
         <VisitorPage vid={decodeURIComponent(visitorMatch[1])} />
       ) : (
         <>
-          <Header
-            meta={data?.meta ?? null}
-            filters={filters}
-            onFilters={patchFilters}
-            auto={auto}
-            onAuto={setAuto}
-            onRefresh={() => setReloadKey((value) => value + 1)}
-            refreshing={loading}
-            onData={() => setDataOpen(true)}
-            onLogout={() => void logout()}
-            theme={theme}
-            onTheme={toggleTheme}
-          />
-
-          <main className="mx-auto max-w-[1600px] space-y-8 px-3 py-5 md:px-5">
+          <main className="mx-auto max-w-[1600px] space-y-10 px-4 py-6 md:px-6">
             <ActiveFilters filters={filters} onPatch={patchFilters} onClear={clearFilters} />
 
             {error ? (
-              <div className="card flex items-center justify-between gap-3 p-4">
-                <span className="mono text-[11px]" style={{ color: "var(--danger)" }}>
+              <div className="card flex items-center justify-between gap-3 p-5">
+                <span className="text-[13px]" style={{ color: "var(--danger)" }}>
                   {error}
                 </span>
                 <button type="button" className="btn" onClick={() => setReloadKey((value) => value + 1)}>
@@ -242,37 +268,35 @@ export default function App() {
             ) : null}
 
             {!data ? (
-              <div className="mono py-24 text-center text-[11px] text-ink-faint">{t("app.loading")}</div>
+              <div className="py-24 text-center text-[13px] text-ink-faint">{t("app.loading")}</div>
             ) : (
               <>
-                <section>
-                  <SectionHead
-                    index="§01"
-                    title={t("section.01")}
-                    right={
-                      <span className="mono text-[10px] text-ink-faint">
-                        {data.meta.range} · {data.meta.bucket}
-                      </span>
-                    }
-                  />
-                  <KpiGrid
-                    kpi={data.kpi}
-                    engagedActive={Boolean(filters.engaged)}
-                    onEngaged={() => patchFilters({ engaged: !filters.engaged })}
-                  />
-                </section>
+                <KpiSection
+                  kpi={data.kpi}
+                  points={data.timeseries.points}
+                  metric={metric}
+                  onMetric={setMetric}
+                  engagedActive={Boolean(filters.engaged)}
+                  onEngaged={() => patchFilters({ engaged: !filters.engaged })}
+                  insights={data.insights}
+                  onProject={(id) => patchFilters({ project: filters.project === id ? undefined : id })}
+                  onSource={(key) => patchFilters({ source: filters.source === key ? undefined : key })}
+                />
 
                 <section>
                   <SectionHead
                     index="§02"
                     title={t("section.02")}
-                    right={<span className="mono text-[10px] text-ink-faint">{t("chart.hint")}</span>}
+                    right={<span className="text-[12.5px] text-ink-faint">{t(`chart.${metric}`)}</span>}
                   />
                   <Chart
                     points={data.timeseries.points}
+                    prevPoints={data.prev_timeseries?.points ?? []}
                     metric={metric}
                     onMetric={setMetric}
                     conversionRate={data.kpi.goals.conversion_rate}
+                    heatmap={data.heatmap}
+                    heatmapMax={data.heatmap_max}
                   />
                 </section>
 
@@ -282,35 +306,39 @@ export default function App() {
                 <SessionsFeed
                   items={data.sessions.items}
                   total={data.sessions.total}
-                  page={1}
                   perPage={perPage}
                   loadingMore={loading}
                   onMore={() => setPerPage((value) => value + 30)}
+                  onOpen={setDrawerSid}
                 />
 
-                <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 pb-6">
-                  <span className="mono text-[9px] text-ink-faint">
+                <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-4 pb-8">
+                  <span className="mono text-[11.5px] text-ink-faint">
                     {new Date(data.meta.generated_at).toLocaleTimeString(lang === "ru" ? "ru-RU" : "en-GB", {
                       timeZone: "Europe/Moscow",
                     })}{" "}
                     MSK · {t("footer.note")}
                   </span>
-                  <span className="mono text-[9px] text-ink-faint">
-                    {t("footer.privacy")}
-                  </span>
+                  <span className="mono text-[11.5px] text-ink-faint">{t("footer.privacy")}</span>
                 </footer>
               </>
             )}
           </main>
 
-          <DataModal
-            open={dataOpen}
-            onClose={() => setDataOpen(false)}
-            filters={filters}
+          <SessionDrawer
+            sid={drawerSid}
+            onClose={() => setDrawerSid(null)}
             onChanged={() => setReloadKey((value) => value + 1)}
           />
         </>
       )}
+
+      <DataModal
+        open={dataOpen}
+        onClose={() => setDataOpen(false)}
+        filters={filters}
+        onChanged={() => setReloadKey((value) => value + 1)}
+      />
     </I18nContext.Provider>
   );
 }

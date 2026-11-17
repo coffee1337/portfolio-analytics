@@ -119,7 +119,9 @@ def test_collect_batch_of_events(client):
     assert collect(client, events).status_code == 204
     overview = client.get("/api/overview?range=today").json()
     assert overview["sessions"]["total"] == 1
-    assert overview["funnel"]["steps"][2]["sessions"] == 1  # loader → top → entry
+    steps = {step["key"]: step for step in overview["funnel"]["steps"]}
+    assert steps["entry"]["sessions"] == 1
+    assert "loader" not in steps
 
 
 def test_anonymous_session_is_generated(client):
@@ -289,6 +291,93 @@ def test_filters_use_matching_keys(client):
     assert client.get("/api/overview?range=today&country=DE").json()["sessions"]["total"] == 0
 
 
+def test_funnel_has_no_loader_row(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", session="s-funnel", ts=(now - 30) * 1000),
+            _event("loader", session="s-funnel", props={"action": "complete"}, ts=(now - 29) * 1000),
+            _event("section", session="s-funnel", props={"id": "top"}, ts=(now - 28) * 1000),
+            _event("section", session="s-funnel", props={"id": "contact"}, ts=(now - 20) * 1000),
+        ],
+    )
+    funnel = client.get("/api/overview?range=today").json()["funnel"]
+    keys = [step["key"] for step in funnel["steps"]]
+    assert keys == ["top", "entry", "about", "stack", "projects", "reviews", "resume", "contact"]
+    assert funnel["steps"][0]["share"] == 100.0
+    assert funnel["loader"]["complete"] == 1
+    assert funnel["loader"]["complete_pct"] == 100.0
+    assert funnel["reached_contact"] == 1
+
+
+def test_heatmap_and_insights(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", session="s-heat", visitor="visitorheat001", ts=(now - 120) * 1000),
+            _event("project_select", session="s-heat", visitor="visitorheat001",
+                   props={"project": "knn", "via": "explorer"}, ts=(now - 110) * 1000),
+            _event("section", session="s-heat", visitor="visitorheat001",
+                   props={"id": "contact"}, ts=(now - 100) * 1000),
+        ],
+    )
+    payload = client.get("/api/overview?range=today").json()
+    assert len(payload["heatmap"]) == 7
+    assert all(len(row) == 24 for row in payload["heatmap"])
+    assert sum(sum(row) for row in payload["heatmap"]) == 1
+    assert payload["heatmap_max"] >= 1
+    assert payload["prev_timeseries"]["bucket"] == payload["timeseries"]["bucket"]
+    insights = payload["insights"]
+    assert insights["project"]["id"] == "knn"
+    assert insights["deep"]["section"] == "contact"
+    assert insights["deep"]["pct"] == 100.0
+    assert insights["peak"]["kind"] in ("hour", "weekday", "day")
+
+
+def test_screen_lang_entry_filters(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", path="/", session="s-f1", visitor="visitorflt0001", ts=(now - 60) * 1000),
+            _event("pageview", path="/projects/knn/", session="s-f1", visitor="visitorflt0001", ts=(now - 50) * 1000),
+            {**_event("pageview", path="/projects/knn/", session="s-f1", visitor="visitorflt0001", ts=(now - 55) * 1000),
+             "screen": "1920x1080", "lang": "ru-RU"},
+        ],
+        headers={
+            "origin": "https://coffee1337.github.io",
+            "cf-connecting-ip": "95.161.224.13",
+            "cf-ipcountry": "RU",
+            "user-agent": HUMAN_UA,
+            "accept-language": "ru-RU",
+        },
+    )
+    assert client.get("/api/overview?range=today&screen=1920x1080").json()["sessions"]["total"] == 1
+    assert client.get("/api/overview?range=today&screen=800x600").json()["sessions"]["total"] == 0
+    assert client.get("/api/overview?range=today&lang=ru").json()["sessions"]["total"] == 1
+    assert client.get("/api/overview?range=today&lang=en").json()["sessions"]["total"] == 0
+    assert client.get("/api/overview?range=today&entry=/").json()["sessions"]["total"] == 1
+    assert client.get("/api/overview?range=today&entry=/projects/knn/").json()["sessions"]["total"] == 0
+    assert client.get("/api/overview?range=today&path=/projects/knn/").json()["sessions"]["total"] == 1
+
+
+def test_ignore_self_marks_owner(client):
+    send(client, session="s-owner", visitor="visitorowner001")
+    response = client.post(
+        "/api/ignore/self",
+        json={"visitor": "visitorowner001"},
+        headers={"cf-connecting-ip": "95.161.224.13"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ip_masked"].endswith(".xxx")
+    kinds = {item["kind"] for item in client.get("/api/ignore").json()["items"]}
+    assert kinds == {"ip_hash", "visitor"}
+    assert client.get("/api/overview?range=today").json()["meta"]["me_hidden"] == 1
+
+
 def test_custom_date_range(client):
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -364,7 +453,9 @@ def test_cleanup_preview_and_bots(client):
     send(client, session="s-human", visitor="visitorhuman001")
     preview = client.get("/api/cleanup/preview").json()
     assert preview["bots"] == 1 and preview["total"] == 2
-    assert client.post("/api/cleanup", json={"scope": "bots"}).json()["preview"]["total"] == 1
+    removed = client.post("/api/cleanup", json={"scope": "bots"}).json()
+    assert removed["deleted"] == 1
+    assert removed["preview"]["total"] == 1
     assert client.post("/api/cleanup", json={"scope": "all"}).status_code == 400
     assert client.post("/api/cleanup", json={"scope": "all", "confirm": "DELETE"}).json()["preview"]["total"] == 0
 

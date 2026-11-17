@@ -2,14 +2,30 @@ import type { ReactNode } from "react";
 
 import { fmtDelta } from "../lib/format";
 
-export function SectionHead({ index, title, right }: { index: string; title: string; right?: ReactNode }) {
+export function SectionHead({
+  index,
+  title,
+  right,
+}: {
+  index: string;
+  title: string;
+  right?: ReactNode;
+}) {
   return (
-    <div className="mb-4 flex items-end justify-between gap-4 border-b border-line pb-2">
-      <div className="flex items-baseline gap-3">
-        <span className="kicker">{index}</span>
-        <span className="kicker opacity-40">/</span>
-        <h2 className="font-mono text-[11px] uppercase tracking-[0.2em] text-ink-dim">{title}</h2>
+    <div className="mb-4 flex flex-wrap items-end justify-between gap-3 border-b border-line pb-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="kicker kicker--accent">{index}</span>
+        <h2 className="section-title">{title}</h2>
       </div>
+      {right}
+    </div>
+  );
+}
+
+export function CardTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="mb-3 flex items-start justify-between gap-3">
+      <h3 className="card-title">{children}</h3>
       {right}
     </div>
   );
@@ -20,7 +36,7 @@ export function Delta({ value, invert }: { value: number | null | undefined; inv
   const tone = invert && raw !== "dim" ? (raw === "ok" ? "danger" : "ok") : raw;
   const color = tone === "ok" ? "var(--ok)" : tone === "danger" ? "var(--danger)" : "var(--ink-faint)";
   return (
-    <span className="mono text-[10px]" style={{ color }} title={text}>
+    <span className="mono text-[12px] font-semibold" style={{ color }}>
       {text}
     </span>
   );
@@ -73,7 +89,7 @@ export function Tabs<T extends string>({
   onChange: (key: T) => void;
 }) {
   return (
-    <div className="no-scrollbar -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+    <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
       {items.map((item) => (
         <button
           key={item.key}
@@ -98,27 +114,68 @@ export function Bar({ value, muted }: { value: number; muted?: boolean }) {
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="py-6 text-center font-mono text-[11px] text-ink-faint">{children}</div>;
+export function Sparkline({
+  values,
+  height = 30,
+  tone = "var(--accent)",
+}: {
+  values: number[];
+  height?: number;
+  tone?: string;
+}) {
+  if (values.length === 0) return <div style={{ height }} />;
+  const max = Math.max(1, ...values);
+  const step = values.length > 1 ? 100 / (values.length - 1) : 100;
+  const points = values.map((value, index) => {
+    const x = values.length > 1 ? index * step : 50;
+    const y = 26 - (value / max) * 22;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  });
+  const line = `M${points.join(" L")}`;
+  const area = `${line} L100,28 L0,28 Z`;
+  const id = `spark-${Math.abs(values.reduce((acc, value, index) => acc + value * (index + 1), 0))}`;
+  return (
+    <svg
+      viewBox="0 0 100 28"
+      preserveAspectRatio="none"
+      width="100%"
+      height={height}
+      aria-hidden="true"
+      className="overflow-visible"
+    >
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={tone} stopOpacity={0.26} />
+          <stop offset="100%" stopColor={tone} stopOpacity={0} />
+        </linearGradient>
+      </defs>
+      <path d={area} fill={`url(#${id})`} />
+      <path
+        d={line}
+        fill="none"
+        stroke={tone}
+        strokeWidth={1.6}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
 }
 
-export function Badge({ children, tone }: { children: ReactNode; tone?: "accent" | "ok" | "warn" | "danger" }) {
+export function Empty({ children }: { children: ReactNode }) {
+  return <div className="py-6 text-center text-[13px] text-ink-faint">{children}</div>;
+}
+
+export function Badge({
+  children,
+  tone,
+}: {
+  children: ReactNode;
+  tone?: "accent" | "ok" | "warn" | "danger";
+}) {
   return (
-    <span
-      className="pixel inline-flex items-center border px-1 py-[1px] leading-none"
-      style={{
-        color:
-          tone === "ok"
-            ? "var(--ok)"
-            : tone === "warn"
-              ? "var(--warn)"
-              : tone === "danger"
-                ? "var(--danger)"
-                : "var(--accent)",
-        borderColor: "currentColor",
-        opacity: 0.9,
-      }}
-    >
+    <span className="badge" data-tone={tone}>
       {children}
     </span>
   );
@@ -128,8 +185,8 @@ export function Stat({ label, value, hint }: { label: string; value: ReactNode; 
   return (
     <div>
       <div className="kicker mb-1">{label}</div>
-      <div className="mono text-[12px] text-ink">{value}</div>
-      {hint ? <div className="mono mt-0.5 text-[10px] text-ink-faint">{hint}</div> : null}
+      <div className="mono text-[13px] text-ink">{value}</div>
+      {hint ? <div className="mono mt-0.5 text-[12px] text-ink-faint">{hint}</div> : null}
     </div>
   );
 }
