@@ -3,16 +3,16 @@ import type { MouseEvent } from "react";
 
 import { useI18n } from "../i18n";
 import { fmtDuration, fmtNum, fmtPct } from "../lib/format";
-import type { Metric, Point } from "../lib/types";
+import type { Filters, Metric, Point } from "../lib/types";
 import { Empty } from "./ui";
 
-const METRICS: Metric[] = ["visits", "visitors", "engaged", "pageviews", "goals", "avg_sec"];
+const METRICS: Metric[] = ["visits", "visitors", "engaged", "bounce_rate", "pageviews", "goals", "avg_sec"];
 const HEIGHT = 250;
 const PAD_TOP = 14;
 const PAD_BOTTOM = 8;
-const GUTTER = 48;
-
-type Mode = "area" | "bars" | "heatmap";
+const GUTTER = 52;
+const TOOLTIP_WIDTH = 176;
+export type ChartMode = "area" | "bars" | "heatmap";
 
 export function Chart({
   points,
@@ -22,6 +22,12 @@ export function Chart({
   conversionRate,
   heatmap,
   heatmapMax,
+  mode,
+  onMode,
+  compare,
+  onCompare,
+  filters,
+  onPatch,
 }: {
   points: Point[];
   prevPoints: Point[];
@@ -30,14 +36,18 @@ export function Chart({
   conversionRate: number;
   heatmap: number[][];
   heatmapMax: number;
+  mode: ChartMode;
+  onMode: (mode: ChartMode) => void;
+  compare: boolean;
+  onCompare: (value: boolean) => void;
+  filters: Filters;
+  onPatch: (patch: Partial<Filters>) => void;
 }) {
   const { t, lang } = useI18n();
-  const [mode, setMode] = useState<Mode>("area");
-  const [compare, setCompare] = useState(false);
   const [hover, setHover] = useState<number | null>(null);
+  const [cell, setCell] = useState<{ day: number; hour: number } | null>(null);
   const [width, setWidth] = useState(960);
   const wrapRef = useRef<HTMLDivElement | null>(null);
-  const [cell, setCell] = useState<{ day: number; hour: number } | null>(null);
 
   useEffect(() => {
     const node = wrapRef.current;
@@ -49,18 +59,32 @@ export function Chart({
     observer.observe(node);
     setWidth(Math.round(node.getBoundingClientRect().width) || 960);
     return () => observer.disconnect();
-  }, []);
+  }, [mode]);
 
   const values = useMemo(() => points.map((point) => Number(point[metric] ?? 0)), [points, metric]);
   const prevValues = useMemo(
     () => prevPoints.map((point) => Number(point[metric] ?? 0)),
     [prevPoints, metric],
   );
+
+  const allZero = values.every((value) => value === 0);
+  const percent = metric === "bounce_rate";
   const rawMax = Math.max(1, compare ? Math.max(...prevValues, ...values, 1) : Math.max(...values, 1));
-  const rawStep = rawMax / 4;
-  const magnitude = Math.pow(10, Math.floor(Math.log10(Math.max(1, rawStep))));
-  const tickStep = Math.max(1, Math.ceil(rawStep / magnitude) * magnitude);
-  const max = tickStep * 4;
+
+  let tickStep: number;
+  let max: number;
+  if (percent) {
+    tickStep = 25;
+    max = 100;
+  } else if (rawMax <= 3) {
+    tickStep = 1;
+    max = Math.max(2, Math.ceil(rawMax));
+  } else {
+    const rawStep = rawMax / 4;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(Math.max(1, rawStep))));
+    tickStep = Math.max(1, Math.ceil(rawStep / magnitude) * magnitude);
+    max = tickStep * 4;
+  }
 
   const plotWidth = Math.max(80, width - GUTTER - 8);
   const plotHeight = HEIGHT - PAD_TOP - PAD_BOTTOM;
@@ -95,13 +119,18 @@ export function Chart({
       .join(" ");
   }, [compare, prevValues, max, width]);
 
-  const ticks = useMemo(() => Array.from({ length: 5 }, (_, index) => tickStep * index), [tickStep]);
+  const ticks = percent
+    ? [0, 25, 50, 75, 100]
+    : Array.from({ length: Math.round(max / tickStep) + 1 }, (_, index) => tickStep * index);
 
-  const format = (value: number) => (metric === "avg_sec" ? fmtDuration(value, lang) : fmtNum(value, lang));
+  const format = (value: number) =>
+    percent ? `${Math.round(value)}%` : metric === "avg_sec" ? fmtDuration(value, lang) : fmtNum(value, lang);
+
   const totalVisits = points.reduce((sum, point) => sum + point.visits, 0);
   const labelEvery = Math.max(1, Math.ceil(points.length / (width > 700 ? 12 : 6)));
   const active = hover !== null ? points[hover] : null;
   const single = points.length === 1;
+  const heatTotal = heatmap.flat().reduce((sum, value) => sum + value, 0);
 
   function handleMove(event: MouseEvent<SVGSVGElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -114,7 +143,15 @@ export function Chart({
     setHover(Math.min(points.length - 1, Math.max(0, index)));
   }
 
-  const heatCells = heatmap.flat().reduce((sum, value) => sum + value, 0);
+  const tooltipLeft =
+    hover !== null
+      ? Math.min(Math.max(8, x(hover) - TOOLTIP_WIDTH / 2), Math.max(8, width - TOOLTIP_WIDTH - 8))
+      : 0;
+
+  const toggleCell = (day: number, hour: number) => {
+    const same = filters.dow === day && filters.hour === hour;
+    onPatch(same ? { dow: undefined, hour: undefined } : { dow: day, hour });
+  };
 
   return (
     <div className="card p-5 md:p-6">
@@ -138,19 +175,19 @@ export function Chart({
               type="button"
               className="pill pill--sm"
               data-active={compare ? "true" : undefined}
-              onClick={() => setCompare((value) => !value)}
+              onClick={() => onCompare(!compare)}
               title={t("chart.compare")}
             >
               ⤳ {t("chart.compare")}
             </button>
           ) : null}
-          {(["area", "bars", "heatmap"] as Mode[]).map((key) => (
+          {(["area", "bars", "heatmap"] as ChartMode[]).map((key) => (
             <button
               key={key}
               type="button"
               className="pill pill--sm"
               data-active={mode === key ? "true" : undefined}
-              onClick={() => setMode(key)}
+              onClick={() => onMode(key)}
             >
               {t(`chart.mode.${key}`)}
             </button>
@@ -163,10 +200,10 @@ export function Chart({
           <div className="mb-2 flex items-baseline justify-between gap-2">
             <span className="text-[13px] text-ink-dim">{t("chart.heatmap.hint")}</span>
             <span className="mono text-[12px] text-ink-faint">
-              {t("chart.total")}: {fmtNum(heatCells)}
+              {t("chart.total")}: {fmtNum(heatTotal)}
             </span>
           </div>
-          {heatCells === 0 ? (
+          {heatTotal === 0 ? (
             <Empty>{t("chart.heatmap.empty")}</Empty>
           ) : (
             <div className="overflow-x-auto no-scrollbar">
@@ -175,7 +212,7 @@ export function Chart({
                   <span className="w-8 shrink-0" />
                   <div className="grid flex-1 gap-1" style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}>
                     {Array.from({ length: 24 }, (_, hour) => (
-                      <span key={hour} className="mono text-center text-[10.5px] text-ink-faint">
+                      <span key={hour} className="mono text-center text-[12px] text-ink-faint">
                         {hour % 6 === 0 ? String(hour).padStart(2, "0") : ""}
                       </span>
                     ))}
@@ -184,27 +221,31 @@ export function Chart({
                 <div className="flex flex-col gap-1">
                   {heatmap.map((row, day) => (
                     <div key={day} className="flex items-center gap-1.5">
-                      <span className="mono w-8 shrink-0 text-[11px] text-ink-faint">{t(`chart.wd.${day}`)}</span>
+                      <span className="mono w-8 shrink-0 text-[12px] text-ink-faint">{t(`chart.wd.${day}`)}</span>
                       <div className="grid flex-1 gap-1" style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}>
                         {row.map((value, hour) => {
                           const ratio = heatmapMax ? value / heatmapMax : 0;
-                          const isActive = cell?.day === day && cell?.hour === hour;
+                          const selected = filters.dow === day && filters.hour === hour;
+                          const isHover = cell?.day === day && cell?.hour === hour;
                           return (
                             <button
                               key={hour}
                               type="button"
                               onMouseEnter={() => setCell({ day, hour })}
                               onMouseLeave={() => setCell(null)}
-                              className="h-6 border transition-transform"
+                              onClick={() => toggleCell(day, hour)}
+                              className="h-6 transition-transform hover:scale-[1.06]"
                               style={{
                                 background:
                                   ratio === 0
                                     ? "var(--bg-3)"
                                     : `color-mix(in srgb, var(--accent) ${Math.round(18 + ratio * 82)}%, var(--bg-3))`,
-                                borderColor: isActive ? "var(--ink)" : "var(--line-2)",
+                                border: `1px solid ${
+                                  selected ? "var(--accent)" : isHover ? "var(--ink-dim)" : "var(--line-2)"
+                                }`,
                               }}
                               title={`${t(`chart.wd.${day}`)} ${String(hour).padStart(2, "0")}:00 — ${value}`}
-                              aria-label={`${t(`chart.wd.${day}`)} ${hour}:00 ${value}`}
+                              aria-label={`${t(`chart.wd.${day}`)} ${hour}:00 — ${value}`}
                             />
                           );
                         })}
@@ -213,21 +254,20 @@ export function Chart({
                   ))}
                 </div>
                 <div className="mt-2 flex items-center justify-end gap-2">
-                  <span className="mono text-[11px] text-ink-faint">0</span>
+                  <span className="mono text-[12px] text-ink-faint">0</span>
                   <div className="h-2 w-24" style={{ background: "linear-gradient(90deg, var(--bg-3), var(--accent))" }} />
-                  <span className="mono text-[11px] text-ink-faint">{heatmapMax}</span>
+                  <span className="mono text-[12px] text-ink-faint">{heatmapMax}</span>
                 </div>
               </div>
             </div>
           )}
-          {cell ? (
-            <div className="mono mt-2 text-[12px] text-ink-dim">
-              {t(`chart.wd.${cell.day}`)} {String(cell.hour).padStart(2, "0")}:00 — {heatmap[cell.day][cell.hour]}{" "}
-              {t("chart.visits")}
-            </div>
-          ) : null}
+          <div className="mono mt-2 min-h-[24px] text-[12.5px] text-ink-dim">
+            {cell
+              ? `${t(`chart.wd.${cell.day}`)} ${String(cell.hour).padStart(2, "0")}:00 — ${heatmap[cell.day][cell.hour]} ${t("chart.visits")}`
+              : t("chart.heatmap.click")}
+          </div>
         </div>
-      ) : points.length === 0 || max === 0 ? (
+      ) : points.length === 0 || allZero ? (
         <Empty>{t("chart.empty")}</Empty>
       ) : (
         <>
@@ -250,19 +290,12 @@ export function Chart({
 
               {ticks.map((tick, index) => (
                 <g key={index}>
-                  <line
-                    x1={GUTTER}
-                    x2={GUTTER + plotWidth}
-                    y1={y(tick)}
-                    y2={y(tick)}
-                    stroke="var(--line-2)"
-                    strokeWidth={1}
-                  />
+                  <line x1={GUTTER} x2={GUTTER + plotWidth} y1={y(tick)} y2={y(tick)} stroke="var(--line-2)" strokeWidth={1} />
                   <text
                     x={GUTTER - 8}
                     y={y(tick) + 4}
                     textAnchor="end"
-                    className="mono"
+                    fontFamily="var(--font-mono)"
                     fontSize={11.5}
                     fill="var(--ink-dim)"
                   >
@@ -294,13 +327,7 @@ export function Chart({
                     opacity={0.55}
                   />
                   <circle cx={x(0)} cy={y(values[0])} r={5} fill="var(--accent)" />
-                  <text
-                    x={x(0) + 12}
-                    y={y(values[0]) - 10}
-                    className="mono"
-                    fontSize={12}
-                    fill="var(--ink)"
-                  >
+                  <text x={x(0) + 12} y={y(values[0]) - 10} fontFamily="var(--font-mono)" fontSize={12} fill="var(--ink)">
                     {format(values[0])}
                   </text>
                 </>
@@ -348,15 +375,12 @@ export function Chart({
 
             {active && !single ? (
               <div
-                className="pointer-events-none absolute top-0 z-10 min-w-[160px] border border-line bg-bg px-3 py-2 shadow-lg"
-                style={{
-                  left: `${Math.min(84, Math.max(2, (hover! / Math.max(1, points.length - 1)) * 90))}%`,
-                  transform: "translateX(-50%)",
-                }}
+                className="pointer-events-none absolute top-0 z-10 border border-line bg-bg px-3 py-2 shadow-lg"
+                style={{ left: tooltipLeft, width: TOOLTIP_WIDTH }}
               >
-                <div className="mono mb-1 text-[11px] uppercase tracking-wider text-ink-faint">{active.label}</div>
+                <div className="mono mb-1 text-[12px] uppercase tracking-wider text-ink-faint">{active.label}</div>
                 <div className="num text-[22px]">{format(Number(active[metric]))}</div>
-                <div className="mono mt-2 space-y-0.5 text-[11.5px] text-ink-dim">
+                <div className="mono mt-2 space-y-0.5 text-[12px] text-ink-dim">
                   <div>
                     {t("chart.goals")}: {active.goals}
                   </div>
@@ -373,11 +397,13 @@ export function Chart({
             {single ? (
               <div className="mono mt-1 text-[12px] text-ink-faint">{t("chart.single")}</div>
             ) : (
-              <div className="mono mt-1.5 flex justify-between text-[11.5px] text-ink-dim">
+              <div className="mt-1.5 flex justify-between text-[12px] text-ink-dim" style={{ paddingLeft: GUTTER }}>
                 {points
                   .filter((_, index) => index % labelEvery === 0)
                   .map((point) => (
-                    <span key={point.t}>{point.label}</span>
+                    <span key={point.t} className="mono">
+                      {point.label}
+                    </span>
                   ))}
               </div>
             )}

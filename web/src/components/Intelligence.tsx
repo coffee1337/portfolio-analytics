@@ -1,15 +1,20 @@
 import { useState } from "react";
 
 import { useI18n } from "../i18n";
-import { fmtClock, fmtNum, fmtPct } from "../lib/format";
+import { fmtClock, fmtDuration, fmtNum, fmtPct } from "../lib/format";
+
+const fmtClockDuration = (seconds: number) => fmtDuration(seconds);
 import type { Filters, Overview } from "../lib/types";
-import { EventIcon, GoalIcon } from "./Icons";
+import { ClockIcon, EventIcon, GoalIcon, SourceIcon } from "./Icons";
 import { Badge, Bar, CardTitle, Empty, Pill, SectionHead, Tabs } from "./ui";
 
 export function Funnel({ data }: { data: Overview["funnel"] }) {
   const { t } = useI18n();
   const loader = data.loader;
   const seen = loader.seen ?? loader.complete + loader.skip;
+  // round the pair so the two shares never add up to 101%
+  const completePct = Math.round(loader.complete_pct);
+  const skipPct = Math.max(0, 100 - completePct);
 
   return (
     <div className="card flex h-full flex-col p-5 md:p-6">
@@ -27,15 +32,15 @@ export function Funnel({ data }: { data: Overview["funnel"] }) {
           </span>
         </div>
         <div className="flex h-3 overflow-hidden" style={{ background: "var(--line-2)" }}>
-          <div style={{ width: `${loader.complete_pct}%`, background: "var(--ok)" }} />
-          <div style={{ width: `${loader.skip_pct}%`, background: "var(--accent-2)" }} />
+          <div style={{ width: `${completePct}%`, background: "var(--ok)" }} />
+          <div style={{ width: `${skipPct}%`, background: "var(--accent-2)" }} />
         </div>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px]">
           <span className="text-ink-dim">
-            <span style={{ color: "var(--ok)" }}>■</span> {t("funnel.complete")} {Math.round(loader.complete_pct)}%
+            <span style={{ color: "var(--ok)" }}>■</span> {t("funnel.complete")} {completePct}%
           </span>
           <span className="text-ink-dim">
-            <span style={{ color: "var(--accent-2)" }}>■</span> {t("funnel.skip")} {Math.round(loader.skip_pct)}%
+            <span style={{ color: "var(--accent-2)" }}>■</span> {t("funnel.skip")} {skipPct}%
           </span>
         </div>
       </div>
@@ -77,11 +82,11 @@ export function ProjectsMatrix({
   const { t } = useI18n();
   const hasData = rows.some((row) => row.score > 0);
   const metrics = (row: Overview["projects"][number]) => [
-    { key: "select", label: t("projects.select"), value: row.select },
-    { key: "details", label: t("projects.details"), value: row.details },
-    { key: "case", label: t("projects.case_page"), value: row.case_page },
-    { key: "github", label: "GitHub / Demo", value: row.github + row.demo },
-    { key: "clone", label: t("projects.clone"), value: row.clone_copy },
+    { key: "select", label: t("projects.select"), value: row.select, icon: <EventIcon name="project_select" size={13} /> },
+    { key: "details", label: t("projects.details"), value: row.details, icon: <EventIcon name="section" size={13} /> },
+    { key: "case", label: t("projects.case_page"), value: row.case_page, icon: <EventIcon name="pageview" size={13} /> },
+    { key: "github", label: "GitHub / Demo", value: row.github + row.demo, icon: <GoalIcon goal="project" size={13} /> },
+    { key: "clone", label: t("projects.clone"), value: row.clone_copy, icon: <EventIcon name="cmdk" size={13} /> },
   ];
 
   return (
@@ -117,13 +122,18 @@ export function ProjectsMatrix({
                 {metrics(row).map((metric) => (
                   <span
                     key={metric.key}
-                    className="pill pill--sm"
+                    className={`pill pill--sm ${metric.value ? "" : "opacity-50"}`}
                     style={{ color: metric.value ? "var(--ink)" : "var(--ink-faint)" }}
                   >
-                    <EventIcon name="project_select" size={13} /> {metric.label}:{" "}
-                    <span className="mono">{metric.value}</span>
+                    {metric.icon} {metric.label}: <span className="mono">{metric.value}</span>
                   </span>
                 ))}
+                {row.avg_sec > 0 ? (
+                  <span className="pill pill--sm" style={{ color: "var(--ink)" }}>
+                    <ClockIcon size={13} /> {t("projects.avg_sec")}:{" "}
+                    <span className="mono">{fmtClockDuration(row.avg_sec)}</span>
+                  </span>
+                ) : null}
               </div>
             </button>
           ))}
@@ -169,7 +179,7 @@ export function Goals({
               <button
                 key={row.key}
                 type="button"
-                className="w-full border border-transparent px-1 py-1.5 text-left transition-colors hover:border-line-2 hover:bg-bg-3"
+                className="filter-row w-full px-2 py-1.5 text-left"
                 data-active={filters.goal === row.key ? "true" : undefined}
                 onClick={() => onPatch({ goal: filters.goal === row.key ? undefined : row.key })}
               >
@@ -205,7 +215,7 @@ export function Goals({
 
 type InteractiveTab = "stack" | "assistant" | "cmdk";
 
-export function Interactive({ data }: { data: Overview }) {
+export function Interactive({ data, onOpenSession }: { data: Overview; onOpenSession: (sid: string) => void }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<InteractiveTab>("stack");
   const stackMax = Math.max(1, ...data.stack.map((row) => row.count));
@@ -273,12 +283,13 @@ export function Interactive({ data }: { data: Overview }) {
                       </span>
                     </div>
                     <div className="mt-1 text-[13.5px] leading-snug text-ink">{question.query}</div>
-                    <a
-                      href={`/session/${encodeURIComponent(question.session)}`}
+                    <button
+                      type="button"
+                      onClick={() => onOpenSession(question.session)}
                       className="mono mt-1 inline-block text-[12px] text-accent hover:underline"
                     >
                       → {question.session.slice(0, 12)}
-                    </a>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -313,14 +324,67 @@ export function Interactive({ data }: { data: Overview }) {
   );
 }
 
+export function Clicks({ data }: { data: Overview }) {
+  const { t } = useI18n();
+  const [tab, setTab] = useState<"outbound" | "buttons">("outbound");
+  const rows = tab === "outbound" ? data.clicks.outbound : data.clicks.buttons;
+  const max = Math.max(1, ...rows.map((row) => row.clicks));
+
+  return (
+    <div className="card flex h-full flex-col p-5 md:p-6 xl:col-span-2">
+      <CardTitle right={<span className="mono text-[12px] text-ink-faint">§03c</span>}>
+        {t("clicks.title")}
+      </CardTitle>
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        items={[
+          { key: "outbound", label: t("clicks.outbound") },
+          { key: "buttons", label: t("clicks.buttons") },
+        ]}
+      />
+      <div className="mt-3">
+        {rows.length === 0 ? (
+          <Empty>{t("clicks.empty")}</Empty>
+        ) : (
+          <div className="space-y-2">
+            {rows.map((row) => (
+              <div key={row.key} className="border-b border-line-2 pb-1.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="text-ink-dim">
+                      <SourceIcon kind={row.key} />
+                    </span>
+                    <span className="name truncate" title={row.key}>
+                      {row.key}
+                    </span>
+                  </span>
+                  <span className="mono shrink-0 text-[12px] text-ink-faint">
+                    {t("clicks.clicks", { n: row.clicks })}
+                  </span>
+                </div>
+                <div className="mt-1">
+                  <Bar value={(row.clicks / max) * 100} muted={row.clicks < max} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function IntelligenceSection({
   data,
   filters,
   onPatch,
+  onOpenSession,
 }: {
   data: Overview;
   filters: Filters;
   onPatch: (patch: Partial<Filters>) => void;
+  onOpenSession: (sid: string) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -332,9 +396,10 @@ export function IntelligenceSection({
       />
       <div className="grid gap-3.5 md:gap-4 lg:grid-cols-2">
         <Funnel data={data.funnel} />
-        <Interactive data={data} />
+        <Interactive data={data} onOpenSession={onOpenSession} />
         <ProjectsMatrix rows={data.projects} filters={filters} onPatch={onPatch} />
         <Goals rows={data.goals} filters={filters} onPatch={onPatch} />
+        <Clicks data={data} />
       </div>
     </section>
   );

@@ -277,6 +277,15 @@ export function GoalIcon({ goal, ...props }: IconProps & { goal: string }) {
   );
 }
 
+export function ClockIcon(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.6V8l2.6 1.8" />
+    </Glyph>
+  );
+}
+
 /* ------------------------------------------------------------------ events */
 
 export function EventIcon({ name, ...props }: IconProps & { name: string }) {

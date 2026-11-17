@@ -83,6 +83,7 @@ async def collect(request: Request, background: BackgroundTasks, db: Session = D
         own_hosts={request.url.hostname or ""},
     )
     ingest.insert_rows(rows)
+    analytics.invalidate_overview_cache()
     for ip, sid, ip_hash in pending:
         background.add_task(ingest.enrich_and_backfill, ip, sid, ip_hash, headers)
     return Response(status_code=204, headers={"cache-control": "no-store"})
@@ -159,7 +160,9 @@ def session_detail(sid: str, request: Request, db: Session = Depends(get_db)) ->
 @app.delete("/api/session/{sid}")
 def session_delete(sid: str, request: Request, db: Session = Depends(get_db)) -> dict:
     auth.require_auth(request)
-    return {"deleted": analytics.delete_session(db, sid)}
+    deleted = analytics.delete_session(db, sid)
+    analytics.invalidate_overview_cache()
+    return {"deleted": deleted}
 
 
 @app.get("/api/visitor/{vid}")
@@ -174,7 +177,9 @@ def visitor_detail(vid: str, request: Request, db: Session = Depends(get_db)) ->
 @app.delete("/api/visitor/{vid}")
 def visitor_delete(vid: str, request: Request, db: Session = Depends(get_db)) -> dict:
     auth.require_auth(request)
-    return {"deleted": analytics.delete_visitor(db, vid)}
+    deleted = analytics.delete_visitor(db, vid)
+    analytics.invalidate_overview_cache()
+    return {"deleted": deleted}
 
 
 @app.get("/api/ignore")
@@ -202,6 +207,7 @@ def ignore_add(request: Request, payload: dict = Body(...), db: Session = Depend
         if not value:
             raise HTTPException(status_code=422, detail="value required")
         added.append(analytics.add_ignored(db, kind, value, label))
+    analytics.invalidate_overview_cache()
     return {"items": added, "updated": sum(item["updated"] for item in added)}
 
 
@@ -224,6 +230,7 @@ def ignore_self(
         added.append(analytics.add_ignored(db, "visitor", visitor, "Мой браузер (из дашборда)"))
     if not added:
         raise HTTPException(status_code=422, detail="client ip is not a public address")
+    analytics.invalidate_overview_cache()
     return {
         "items": added,
         "updated": sum(item["updated"] for item in added),
@@ -236,6 +243,7 @@ def ignore_delete(ident: int, request: Request, db: Session = Depends(get_db)) -
     auth.require_auth(request)
     if not analytics.remove_ignored(db, ident):
         raise HTTPException(status_code=404, detail="not found")
+    analytics.invalidate_overview_cache()
     return {"ok": True}
 
 
@@ -251,7 +259,9 @@ def cleanup(request: Request, payload: dict = Body(...), db: Session = Depends(g
     scope = str(payload.get("scope") or "")
     confirm = str(payload.get("confirm") or "")
     try:
-        return analytics.cleanup(db, scope, confirm)
+        result = analytics.cleanup(db, scope, confirm)
+        analytics.invalidate_overview_cache()
+        return result
     except PermissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:

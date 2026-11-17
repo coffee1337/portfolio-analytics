@@ -38,7 +38,7 @@ export function Login({
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span style={{ color: "var(--accent)" }}>●</span>
-            <span className="font-mono text-[11px] text-ink-dim">coffee1337 / analytics</span>
+            <span className="font-mono text-[12px] text-ink-dim">coffee1337 / analytics</span>
           </div>
           <div className="flex gap-1.5">
             <button type="button" className="btn px-2.5 py-1" onClick={() => setLang(lang === "ru" ? "en" : "ru")}>
@@ -53,7 +53,7 @@ export function Login({
         <form onSubmit={submit} className="card p-6">
           <div className="kicker mb-3">{t("login.kicker")}</div>
           <h1 className="font-display text-[26px] leading-none tracking-tight">{t("login.title")}</h1>
-          <p className="mono mt-2 text-[11px] text-ink-faint">{t("login.subtitle")}</p>
+          <p className="mono mt-2 text-[12px] text-ink-faint">{t("login.subtitle")}</p>
 
           <label className="mt-6 flex items-center gap-2 border border-line bg-bg px-3 py-2 focus-within:border-accent">
             <span className="mono text-[12px]" style={{ color: "var(--accent)" }}>
@@ -69,14 +69,14 @@ export function Login({
             />
           </label>
           {error ? (
-            <div className="mono mt-2 text-[11px]" style={{ color: "var(--danger)" }}>
+            <div className="mono mt-2 text-[12px]" style={{ color: "var(--danger)" }}>
               {t("login.error")}
             </div>
           ) : null}
           <button type="submit" className="btn btn--accent mt-4 w-full" disabled={busy || !token.trim()}>
             {t("login.submit")} →
           </button>
-          <p className="mono mt-4 border-t border-line-2 pt-3 text-[11.5px] leading-relaxed text-ink-faint">{t("login.hint")}</p>
+          <p className="mono mt-4 border-t border-line-2 pt-3 text-[12px] leading-relaxed text-ink-faint">{t("login.hint")}</p>
         </form>
       </div>
     </div>

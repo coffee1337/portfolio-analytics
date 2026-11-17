@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import os
 
@@ -10,6 +11,20 @@ from fastapi import HTTPException, Request, Response
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # empty = auth disabled (local dev)
 COOKIE_NAME = "pa_auth"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+COOKIE_CONTEXT = b"pa-cookie-v1"
+
+
+def cookie_value() -> str:
+    """The cookie never carries the raw admin token."""
+    return hmac.new(ADMIN_TOKEN.encode(), COOKIE_CONTEXT, hashlib.sha256).hexdigest()
+
+
+def is_https(request: Request) -> bool:
+    """Render terminates TLS in front of the app: trust X-Forwarded-Proto."""
+    if request.url.scheme == "https":
+        return True
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return proto == "https"
 
 
 def auth_enabled() -> bool:
@@ -26,7 +41,9 @@ def is_authenticated(request: Request) -> bool:
     if not ADMIN_TOKEN:
         return True
     cookie = request.cookies.get(COOKIE_NAME, "")
-    return bool(cookie) and hmac.compare_digest(cookie, ADMIN_TOKEN)
+    if not cookie:
+        return False
+    return hmac.compare_digest(cookie, cookie_value())
 
 
 def require_auth(request: Request) -> None:
@@ -37,9 +54,9 @@ def require_auth(request: Request) -> None:
 def set_auth_cookie(response: Response, request: Request) -> None:
     response.set_cookie(
         COOKIE_NAME,
-        ADMIN_TOKEN,
+        cookie_value(),
         httponly=True,
-        secure=request.url.scheme == "https",
+        secure=is_https(request),
         samesite="lax",
         max_age=COOKIE_MAX_AGE,
         path="/",

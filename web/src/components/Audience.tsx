@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 
 import { useI18n } from "../i18n";
-import { countryName, flag, fmtNum, fmtPct, shortPath } from "../lib/format";
+import { countryName, flag, fmtDuration, fmtNum, fmtPct, shortPath } from "../lib/format";
 import type { Filters, Overview, Row } from "../lib/types";
 import { BrowserIcon, DeviceIcon, OsIcon, SourceIcon } from "./Icons";
 import { Badge, Bar, CardTitle, Empty, SectionHead, Tabs } from "./ui";
@@ -33,7 +33,7 @@ function RowLine({
       type="button"
       disabled={!onClick}
       onClick={onClick}
-      className="group w-full border border-transparent px-2 py-1.5 text-left transition-colors enabled:hover:border-line-2 enabled:hover:bg-bg-3 disabled:cursor-default"
+      className="filter-row group w-full px-2 py-1.5 text-left disabled:cursor-default"
       data-active={active ? "true" : undefined}
     >
       <div className="flex items-baseline justify-between gap-2">
@@ -46,12 +46,15 @@ function RowLine({
         </span>
         <span className="mono shrink-0 text-[12px] text-ink-dim">
           {fmtNum(value)}
-          {meta ? <span className="ml-1.5 text-ink-faint">{meta}</span> : null}
+          {meta ? <span className="ml-1.5 text-ink-faint">· {meta}</span> : null}
         </span>
       </div>
       <div className="mt-1.5 flex items-center gap-2">
         <Bar value={share} muted={muted} />
-        <span className="mono w-10 shrink-0 text-right text-[11px] text-ink-faint">{fmtPct(share)}</span>
+        <span className="mono w-12 shrink-0 text-right text-[12px] text-ink-faint">
+          {active ? <span style={{ color: "var(--accent)" }}>× </span> : null}
+          {fmtPct(share)}
+        </span>
       </div>
     </button>
   );
@@ -289,13 +292,18 @@ export function AudienceSection({
                     label={shortPath(row.key)}
                     value={row.sessions ?? 0}
                     share={row.share ?? 0}
+                    meta={
+                      row.avg_sec
+                        ? fmtDuration(row.avg_sec, lang)
+                        : undefined
+                    }
                     active={filters.path === row.key}
                     onClick={() => toggle("path", row.key)}
                   />
                 ))
               : null}
             {pages === "prefs" ? (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4">
                 <div>
                   <div className="kicker mb-2">{t("audience.lang")}</div>
                   {data.preferences.languages.length === 0 ? (
@@ -307,7 +315,7 @@ export function AudienceSection({
                         type="button"
                         onClick={() => toggle("lang", row.key)}
                         data-active={filters.lang === row.key ? "true" : undefined}
-                        className="mb-1.5 w-full text-left"
+                        className="filter-row mb-1.5 w-full px-2 py-1 text-left"
                       >
                         <div className="mono flex justify-between text-[12.5px]">
                           <span className="text-ink">{row.key.toUpperCase()}</span>
@@ -319,7 +327,23 @@ export function AudienceSection({
                   )}
                 </div>
                 <div>
-                  <div className="kicker mb-2">theme</div>
+                  <div className="kicker mb-2">{t("audience.site_lang")}</div>
+                  {data.preferences.site_langs.length === 0 ? (
+                    <Empty>{t("audience.empty")}</Empty>
+                  ) : (
+                    data.preferences.site_langs.map((row) => (
+                      <div key={row.key} className="mb-1.5">
+                        <div className="mono flex justify-between text-[12.5px]">
+                          <span className="text-ink">{row.key === "ru" ? "/ru/" : "/"}</span>
+                          <span className="text-ink-faint">{fmtPct(row.share ?? 0)}</span>
+                        </div>
+                        <Bar value={row.share ?? 0} muted={row.key !== "ru"} />
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div>
+                  <div className="kicker mb-2">{t("audience.theme")}</div>
                   {data.preferences.themes.length === 0 ? (
                     <Empty>{t("audience.empty")}</Empty>
                   ) : (
@@ -327,7 +351,10 @@ export function AudienceSection({
                       <div key={row.key} className="mb-1.5">
                         <div className="mono flex justify-between text-[12.5px]">
                           <span className="text-ink">{row.key}</span>
-                          <span className="text-ink-faint">{fmtNum(row.count ?? 0)}</span>
+                          <span className="text-ink-faint">
+                            {fmtNum(row.count ?? 0)}
+                            {row.switches ? ` · ↻ ${row.switches}` : ""}
+                          </span>
                         </div>
                         <Bar value={row.share ?? 0} muted={row.key !== "dark"} />
                       </div>

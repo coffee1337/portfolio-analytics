@@ -304,7 +304,8 @@ def test_funnel_has_no_loader_row(client):
     )
     funnel = client.get("/api/overview?range=today").json()["funnel"]
     keys = [step["key"] for step in funnel["steps"]]
-    assert keys == ["top", "entry", "about", "stack", "projects", "reviews", "resume", "contact"]
+    # reviews is not rendered on the site yet → no dead 0% step
+    assert keys == ["top", "entry", "about", "stack", "projects", "resume", "contact"]
     assert funnel["steps"][0]["share"] == 100.0
     assert funnel["loader"]["complete"] == 1
     assert funnel["loader"]["complete_pct"] == 100.0
@@ -494,3 +495,266 @@ def test_wrong_key_and_origin(client):
         json={"key": "test-key", "name": "pageview"},
         headers={"origin": "https://evil.example", "user-agent": HUMAN_UA},
     ).status_code == 403
+
+
+# ------------------------------ v3 ------------------------------ #
+
+
+def test_reviews_appear_when_visited(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", session="s-rev", ts=(now - 40) * 1000),
+            _event("section", session="s-rev", props={"id": "reviews"}, ts=(now - 30) * 1000),
+        ],
+    )
+    keys = [step["key"] for step in client.get("/api/overview?range=today").json()["funnel"]["steps"]]
+    assert "reviews" in keys
+
+
+def test_timeseries_has_bounce_rate(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", session="s-br1", visitor="visitorbr000001", ts=(now - 60) * 1000),
+            _event("exit", session="s-br1", visitor="visitorbr000001", props={"active_sec": 2}, ts=(now - 50) * 1000),
+            _event("pageview", session="s-br2", visitor="visitorbr000002", ts=(now - 40) * 1000),
+            _event("section", session="s-br2", visitor="visitorbr000002", props={"id": "top"}, ts=(now - 35) * 1000),
+            _event("section", session="s-br2", visitor="visitorbr000002", props={"id": "contact"}, ts=(now - 30) * 1000),
+        ],
+    )
+    points = client.get("/api/overview?range=today").json()["timeseries"]["points"]
+    assert all("bounce_rate" in point for point in points)
+    assert any(point["bounce_rate"] == 100.0 for point in points)
+    assert any(point["bounces"] == 2 for point in points)
+
+    # a session with 3+ sections is engaged, so its bucket is not 100% bounce
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", session="s-br3", visitor="visitorbr000003", ts=(now - 20) * 1000),
+            *[
+                _event("section", session="s-br3", visitor="visitorbr000003", props={"id": name},
+                       ts=(now - 18 + index) * 1000)
+                for index, name in enumerate(("top", "entry", "about"))
+            ],
+        ],
+    )
+    points = client.get("/api/overview?range=today").json()["timeseries"]["points"]
+    assert any(0 < point["bounce_rate"] < 100 for point in points)
+
+
+def test_lifetime_visit_index(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", session="s-old", visitor="visitorlife0001", ts=(now - 300) * 1000),
+            _event("pageview", session="s-new", visitor="visitorlife0001", ts=(now - 120) * 1000),
+        ],
+    )
+    payload = client.get("/api/overview?range=today").json()
+    indexes = {item["sid"]: item["visit_index"] for item in payload["sessions"]["items"]}
+    assert indexes == {"s-old": 1, "s-new": 2}
+    # even a single-visit page shows the lifetime number, not "1 of the slice"
+    detail = client.get("/api/session/s-new").json()
+    assert detail["session"]["visit_index"] == 2
+    csv_body = client.get("/api/export/sessions.csv?range=today").text
+    assert "s-new" in csv_body
+
+
+def test_server_search_and_tabs(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            {**_event("pageview", session="s-msk", visitor="visitorsrch001", ts=(now - 90) * 1000),
+             "city": ""},
+        ],
+        headers={
+            "origin": "https://coffee1337.github.io",
+            "cf-connecting-ip": "95.161.224.13",
+            "cf-ipcity": "Moscow",
+            "cf-ipcountry": "RU",
+            "user-agent": HUMAN_UA,
+        },
+    )
+    collect(
+        client,
+        [_event("pageview", session="s-kzn", visitor="visitorsrch002", ts=(now - 80) * 1000)],
+        headers={
+            "origin": "https://coffee1337.github.io",
+            "cf-connecting-ip": "77.88.55.66",
+            "cf-ipcity": "Kazan",
+            "cf-ipcountry": "RU",
+            "user-agent": HUMAN_UA,
+        },
+    )
+    assert client.get("/api/overview?range=today&q=moscow").json()["sessions"]["total"] == 1
+    assert client.get("/api/overview?range=today&q=zzz").json()["sessions"]["total"] == 0
+    counts = client.get("/api/overview?range=today").json()["sessions"]["counts"]
+    assert counts["all"] == 2 and counts["bounce"] == 2 and counts["engaged"] == 0
+    engaged = client.get("/api/overview?range=today&tab=engaged").json()
+    assert engaged["sessions"]["total"] == 0
+    assert engaged["sessions"]["counts"]["all"] == 2
+
+
+def test_dow_hour_and_hide_dc_filters(client):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = time.time()
+    send(client, session="s-slot", visitor="visitorslot001", ts=(now - 20) * 1000)
+    local = datetime.now(ZoneInfo("Europe/Moscow"))
+    payload = client.get(
+        f"/api/overview?range=today&dow={local.weekday()}&hour={local.hour}"
+    ).json()
+    assert payload["sessions"]["total"] == 1
+    other_hour = (local.hour + 5) % 24
+    assert (
+        client.get(f"/api/overview?range=today&dow={local.weekday()}&hour={other_hour}").json()["sessions"]["total"]
+        == 0
+    )
+    assert client.get("/api/overview?range=today&hide_dc=1").json()["sessions"]["total"] == 1
+    assert "dc_hidden" in client.get("/api/overview?range=today").json()["meta"]
+
+
+def test_clicks_and_page_time(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            {**_event("pageview", session="s-clk", visitor="visitorclk001", ts=(now - 120) * 1000),
+             "path": "/projects/knn/"},
+            _event("click", session="s-clk", visitor="visitorclk001",
+                   props={"kind": "telegram", "target": "https://t.me/coffee1337"}, ts=(now - 110) * 1000),
+            _event("entry_cta", session="s-clk", visitor="visitorclk001",
+                   props={"card": "hire"}, ts=(now - 100) * 1000),
+            _event("project_action", session="s-clk", visitor="visitorclk001",
+                   props={"project": "knn", "action": "github", "href": "https://github.com/coffee1337/knn"},
+                   ts=(now - 90) * 1000),
+            _event("exit", session="s-clk", visitor="visitorclk001",
+                   props={"active_sec": 30, "max_scroll": 80}, ts=(now - 60) * 1000),
+        ],
+    )
+    payload = client.get("/api/overview?range=today").json()
+    clicks = payload["clicks"]
+    assert any("t.me" in row["key"] for row in clicks["outbound"])
+    assert any("github.com/coffee1337/knn" in row["key"] for row in clicks["outbound"])
+    assert any("hire" in row["key"] for row in clicks["buttons"])
+    goals = {row["key"]: row for row in payload["goals"]}
+    assert goals["social"]["sessions"] == 1
+    pages = {row["key"]: row for row in payload["paths"]["all"]}
+    assert pages["/projects/knn/"]["avg_sec"] > 0
+    projects = {row["id"]: row for row in payload["projects"]}
+    assert projects["knn"]["avg_sec"] > 0
+
+
+def test_preferences_site_lang_and_theme(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            {**_event("pageview", path="/ru/", session="s-pref", visitor="visitorpref001", ts=(now - 60) * 1000),
+             "lang": "ru-RU",
+             "props": {"site_lang": "ru", "theme": "light", "active_sec": 0}},
+            _event("theme_switch", session="s-pref", visitor="visitorpref001",
+                   props={"to": "dark", "active_sec": 5}, ts=(now - 50) * 1000),
+        ],
+    )
+    prefs = client.get("/api/overview?range=today").json()["preferences"]
+    assert prefs["languages"][0]["key"] == "ru"
+    assert prefs["site_langs"][0]["key"] == "ru"
+    assert prefs["themes"][0]["key"] == "dark"
+    assert prefs["themes"][0]["switches"] == 1
+
+
+def test_insights_peak_weekday_is_index(client):
+    now = time.time()
+    send(client, session="s-peak", visitor="visitorpeak001", ts=(now - 20) * 1000)
+    peak = client.get("/api/overview?range=7d").json()["insights"]["peak"]
+    assert peak is not None
+    assert isinstance(peak.get("weekday"), int) or peak["kind"] in ("hour", "day")
+
+
+def test_insights_peak_none_without_data(client):
+    payload = client.get("/api/overview?range=today").json()
+    assert payload["insights"]["peak"] is None
+    assert payload["insights"]["project"] is None
+
+
+def test_auth_cookie_is_hmac_and_secure_behind_proxy(auth_client):
+    import hashlib
+    import hmac as hmac_lib
+
+    response = auth_client.post(
+        "/api/login",
+        json={"token": "s3cret"},
+        headers={"x-forwarded-proto": "https"},
+    )
+    cookie_header = response.headers.get("set-cookie", "")
+    expected = hmac_lib.new(b"s3cret", b"pa-cookie-v1", hashlib.sha256).hexdigest()
+    assert expected in cookie_header
+    assert "s3cret" not in cookie_header
+    assert "Secure" in cookie_header
+    # http (no forwarded proto) still works and keeps the cookie non-secure
+    plain = auth_client.post("/api/login", json={"token": "s3cret"})
+    assert "Secure" not in plain.headers.get("set-cookie", "")
+    assert auth_client.get("/api/overview?range=today").status_code == 200
+
+
+def test_hide_dc_badge_matches_hidden_sessions(client):
+    from datetime import datetime, timezone
+
+    from app import analytics as analytics_mod
+    from app.db import SessionLocal
+    from app.models import Event
+
+    now = time.time()
+    send(client, session="s-plain", visitor="visitordc00001", ts=(now - 30) * 1000)
+    with SessionLocal() as db:
+        db.add(
+            Event(
+                ts=datetime.now(timezone.utc),
+                site_key=analytics_mod.SITE_KEY,
+                name="pageview",
+                path="/",
+                session_id="s-dc",
+                visitor="visitordc00002",
+                is_datacenter=True,
+                device="desktop",
+                os_name="Linux",
+                browser="Chrome",
+                country="NL",
+                city="Amsterdam",
+                isp="DigitalOcean, LLC",
+            )
+        )
+        db.commit()
+    analytics_mod.invalidate_overview_cache()
+
+    full = client.get("/api/overview?range=today").json()
+    hidden = client.get("/api/overview?range=today&hide_dc=1").json()
+    assert full["sessions"]["total"] == 2
+    assert full["meta"]["dc_hidden"] == 1
+    assert hidden["sessions"]["total"] == full["sessions"]["total"] - full["meta"]["dc_hidden"]
+    assert hidden["meta"]["dc_hidden"] == 0
+
+
+def test_geo_negative_cache_short_ttl():
+    import time as time_module
+
+    from app import geo
+    from app.geo import GeoInfo
+
+    geo.clear_cache()
+    geo.cache_geo("8.8.4.4", GeoInfo(source="none"), geo.NEGATIVE_TTL)
+    assert geo.cached_geo("8.8.4.4") is not None
+    geo.clear_cache()
+    geo.cache_geo("8.8.4.4", GeoInfo(source="none"), 0.05)
+    time_module.sleep(0.12)
+    assert geo.cached_geo("8.8.4.4") is None
+    assert geo.NEGATIVE_TTL == 300

@@ -76,11 +76,15 @@ coffee1337.github.io ──POST /collect──▶ FastAPI ──▶ Neon
 Фильтры `overview` и экспорта: `range=today|yesterday|7d|30d|90d|all|custom` (или `from`/`to`),
 `me`, `bots`, `source`, `utm`, `country`, `city`, `isp`, `device`, `os`, `browser`,
 `path` (любая страница визита), `entry` (только точка входа), `screen`, `lang`,
-`project`, `goal`, `engaged`, `page`, `per_page`.
+`project`, `goal`, `engaged`, `hide_dc` (без дата-центров/VPN), `dow` (0–6) и `hour` (0–23)
+по МСК (клик по ячейке матрицы 24×7), `q` (поиск по городу, ISP, IP, странице, sid…),
+`tab=all|engaged|goals|live|bounce`, `page`, `per_page`.
 
 `overview` дополнительно отдаёт `prev_timeseries` (пунктир прошлого периода),
-`heatmap` (7×24 визитов по дням недели и часам МСК) и `insights` (топ-проект,
-главный источник, доскролл до контактов, пик активности).
+`heatmap` (7×24 визитов по дням недели и часам МСК), `insights` (топ-проект,
+главный источник, доскролл до контактов, пик активности), `clicks` (топ внешних ссылок
+и кнопок), `preferences` (язык браузера, версия сайта, тема по сессиям) и
+`sessions.counts` (счётчики вкладок журнала за весь период, а не за страницу).
 
 ## Дашборд
 

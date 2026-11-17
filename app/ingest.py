@@ -257,5 +257,8 @@ async def enrich_and_backfill(ip: str, session_id: str, ip_hash: str, headers: d
                 .values(**values)
             )
             db.commit()
+        from .analytics import invalidate_overview_cache
+
+        invalidate_overview_cache()
     except Exception:  # noqa: BLE001 - background task must never crash the loop
         log.exception("geo backfill failed for %s", ip_hash)

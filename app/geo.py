@@ -218,7 +218,7 @@ class _GeoCache:
     def __init__(self, ttl: int = CACHE_TTL, limit: int = CACHE_MAX) -> None:
         self._ttl = ttl
         self._limit = limit
-        self._data: dict[str, tuple[float, GeoInfo]] = {}
+        self._data: dict[str, tuple[float, float, GeoInfo]] = {}
         self._lock = threading.Lock()
 
     def get(self, key: str) -> GeoInfo | None:
@@ -227,8 +227,8 @@ class _GeoCache:
             item = self._data.get(key)
             if not item:
                 return None
-            stored_at, info = item
-            if now - stored_at > self._ttl:
+            expires_at, stored_at, info = item
+            if now >= expires_at:
                 self._data.pop(key, None)
                 return None
             # touch for LRU ordering
@@ -236,10 +236,11 @@ class _GeoCache:
             self._data[key] = item
             return info
 
-    def put(self, key: str, info: GeoInfo) -> None:
+    def put(self, key: str, info: GeoInfo, ttl: int | None = None) -> None:
+        now = time.time()
         with self._lock:
             self._data.pop(key, None)
-            self._data[key] = (time.time(), info)
+            self._data[key] = (now + (ttl if ttl is not None else self._ttl), now, info)
             while len(self._data) > self._limit:
                 oldest = next(iter(self._data))
                 self._data.pop(oldest, None)
@@ -259,9 +260,12 @@ def cached_geo(ip: str) -> GeoInfo | None:
     return _cache.get(ip) if ip else None
 
 
-def cache_geo(ip: str, info: GeoInfo) -> None:
+NEGATIVE_TTL = 300  # 5 minutes: an ip-api rate limit must not hide the city for a day
+
+
+def cache_geo(ip: str, info: GeoInfo, ttl: int | None = None) -> None:
     if ip:
-        _cache.put(ip, info)
+        _cache.put(ip, info, ttl)
 
 
 def clear_cache() -> None:
@@ -359,6 +363,8 @@ async def enrich_geo_async(ip: str, headers: Mapping[str, str] | None = None) ->
     if info is None:
         # Cache the negative result too, but keep CDN header data as a bonus.
         info = replace(header_geo(headers or {}), source="none")
+        cache_geo(ip, info, NEGATIVE_TTL)
+        return info
     cache_geo(ip, info)
     return info
 

@@ -116,9 +116,9 @@ export function KpiGrid({
         delta={kpi.bounce.delta}
         invert
         sub={t("kpi.bounce.sub", { count: kpi.bounce.count })}
-        spark={spark("visits")}
-        active={metric === "visits"}
-        onClick={() => onMetric("visits")}
+        spark={spark("bounce_rate")}
+        active={metric === "bounce_rate"}
+        onClick={() => onMetric("bounce_rate")}
         hint={hint}
       />
       <KpiCard
@@ -206,7 +206,11 @@ export function InsightsStrip({
     {
       key: "peak",
       label: t("insights.peak"),
-      value: insights.peak ? insights.peak.label : t("insights.none"),
+      value: insights.peak
+        ? insights.peak.weekday !== undefined
+          ? t(`chart.wd.${insights.peak.weekday}`)
+          : insights.peak.label
+        : t("insights.none"),
       sub: insights.peak ? t("insights.sessions", { n: insights.peak.visits }) : "",
     },
   ];

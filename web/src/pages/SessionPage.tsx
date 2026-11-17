@@ -94,9 +94,9 @@ export function SessionPage({ sid }: { sid: string }) {
       {message ? <div className="mb-4 border border-line bg-bg-2 px-4 py-2.5 text-[13px]">{message}</div> : null}
 
       <div className="mb-5">
-        <div className="kicker kicker--accent mb-2">§S / {t("detail.passport")}</div>
+        <div className="kicker kicker--accent mb-2">§06 / {t("detail.passport")}</div>
         <h1 className="font-display text-[28px] font-bold leading-tight tracking-tight md:text-[34px]">
-          {fmtDate(session.start)} · {fmtClock(session.start)}
+          {fmtDate(session.start, lang)} · {fmtClock(session.start)}
           <span className="ml-3 text-[20px] text-ink-dim md:text-[24px]">{fmtDuration(session.duration, lang)}</span>
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2">

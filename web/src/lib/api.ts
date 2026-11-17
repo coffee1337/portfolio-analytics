@@ -41,6 +41,11 @@ export function queryString(filters: Filters, extra: Record<string, string | num
   if (filters.me) params.set("me", "1");
   if (filters.bots) params.set("bots", "1");
   if (filters.engaged) params.set("engaged", "1");
+  if (filters.hide_dc) params.set("hide_dc", "1");
+  if (filters.dow !== undefined && filters.dow !== null) params.set("dow", String(filters.dow));
+  if (filters.hour !== undefined && filters.hour !== null) params.set("hour", String(filters.hour));
+  if (filters.q) params.set("q", filters.q);
+  if (filters.tab && filters.tab !== "all") params.set("tab", filters.tab);
   for (const key of [
     "source",
     "utm",

@@ -42,11 +42,11 @@ export function fmtClock(iso: string): string {
   }).format(date);
 }
 
-export function fmtDateTime(iso: string): string {
+export function fmtDateTime(iso: string, lang = "ru"): string {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("ru-RU", {
+  return new Intl.DateTimeFormat(lang === "ru" ? "ru-RU" : "en-GB", {
     timeZone: MSK,
     day: "2-digit",
     month: "2-digit",
@@ -56,11 +56,11 @@ export function fmtDateTime(iso: string): string {
   }).format(date);
 }
 
-export function fmtDate(iso: string): string {
+export function fmtDate(iso: string, lang = "ru"): string {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("ru-RU", {
+  return new Intl.DateTimeFormat(lang === "ru" ? "ru-RU" : "en-GB", {
     timeZone: MSK,
     day: "2-digit",
     month: "short",

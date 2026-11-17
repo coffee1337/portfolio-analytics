@@ -143,9 +143,9 @@ body {
   gap: 0.4rem;
   border: 1px solid var(--line);
   border-radius: 9999px;
-  padding: 0.38rem 0.85rem;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  padding: 0.4rem 0.9rem;
+  font-family: var(--font-body);
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.01em;
   line-height: 1.25;
@@ -188,8 +188,8 @@ body {
 }
 
 .pill--sm {
-  padding: 0.28rem 0.68rem;
-  font-size: 12px;
+  padding: 0.3rem 0.7rem;
+  font-size: 12.5px;
 }
 
 .btn {
@@ -200,8 +200,8 @@ body {
   border-radius: 9999px;
   border: 1px solid var(--line);
   padding: 0.5rem 1.05rem;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: var(--font-body);
+  font-size: 13px;
   font-weight: 500;
   color: var(--ink);
   background: transparent;
@@ -392,10 +392,10 @@ body {
 
 .grid-table th {
   text-align: left;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-body);
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-dim);
   padding: 0.65rem 0.85rem;
@@ -420,6 +420,22 @@ body {
 
 .grid-table tbody tr[data-active="true"] {
   background: var(--accent-glow);
+}
+
+.filter-row {
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.filter-row:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+
+.filter-row[data-active="true"] {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-glow);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .bar-track {

@@ -4,6 +4,7 @@ import type { MouseEvent } from "react";
 import { ActiveFilters, Header } from "./components/Header";
 import { AudienceSection } from "./components/Audience";
 import { Chart } from "./components/Chart";
+import type { ChartMode } from "./components/Chart";
 import { DataModal } from "./components/DataModal";
 import { IntelligenceSection } from "./components/Intelligence";
 import { KpiSection } from "./components/Kpi";
@@ -14,59 +15,17 @@ import { SectionHead } from "./components/ui";
 import { I18nContext, translate } from "./i18n";
 import type { Lang } from "./i18n";
 import { api } from "./lib/api";
+import { mergeFilters, readFilters, toParams } from "./lib/filters";
 import { applyTheme, useInterval, usePath, useSearchParams } from "./lib/hooks";
 import type { Filters, Metric, Overview } from "./lib/types";
 import { SessionPage } from "./pages/SessionPage";
 import { VisitorPage } from "./pages/VisitorPage";
 
-const FILTER_KEYS = [
-  "source",
-  "utm",
-  "country",
-  "city",
-  "isp",
-  "device",
-  "os",
-  "browser",
-  "path",
-  "entry",
-  "screen",
-  "lang",
-  "project",
-  "goal",
-] as const;
-
-function readFilters(params: URLSearchParams): Filters {
-  const filters: Filters = {
-    range: params.get("range") || "7d",
-    me: params.get("me") === "1",
-    bots: params.get("bots") === "1",
-    engaged: params.get("engaged") === "1",
-  };
-  const from = params.get("from");
-  const to = params.get("to");
-  if (from) filters.from = from;
-  if (to) filters.to = to;
-  for (const key of FILTER_KEYS) {
-    const value = params.get(key);
-    if (value) filters[key] = value;
-  }
-  return filters;
-}
-
-function toParams(filters: Filters): URLSearchParams {
-  const params = new URLSearchParams();
-  if (filters.range && filters.range !== "7d") params.set("range", filters.range);
-  if (filters.me) params.set("me", "1");
-  if (filters.bots) params.set("bots", "1");
-  if (filters.engaged) params.set("engaged", "1");
-  if (filters.from) params.set("from", filters.from);
-  if (filters.to) params.set("to", filters.to);
-  for (const key of FILTER_KEYS) {
-    const value = filters[key];
-    if (value) params.set(key, String(value));
-  }
-  return params;
+function stored<T extends string | number>(key: string, fallback: T, allowed: T[]): T {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const value = (typeof fallback === "number" ? Number(raw) : raw) as T;
+  return allowed.includes(value) ? value : fallback;
 }
 
 export default function App() {
@@ -82,9 +41,13 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
   const [perPage, setPerPage] = useState(30);
-  const [auto, setAuto] = useState(15);
+  const [auto, setAutoState] = useState<number>(() => stored("pa-auto", 15, [0, 15, 30]));
   const [reloadKey, setReloadKey] = useState(0);
-  const [metric, setMetric] = useState<Metric>("visits");
+  const [metric, setMetric] = useState<Metric>("visitors");
+  const [chartMode, setChartMode] = useState<ChartMode>(() =>
+    stored<ChartMode>("pa-chart-mode", "area", ["area", "bars", "heatmap"]),
+  );
+  const [compare, setCompare] = useState<boolean>(() => localStorage.getItem("pa-chart-compare") === "1");
   const [dataOpen, setDataOpen] = useState(false);
   const [drawerSid, setDrawerSid] = useState<string | null>(null);
   const path = usePath();
@@ -97,6 +60,18 @@ export default function App() {
     setLangState(next);
     localStorage.setItem("pa-lang", next);
     document.documentElement.lang = next;
+  }, []);
+  const setAuto = useCallback((value: number) => {
+    setAutoState(value);
+    localStorage.setItem("pa-auto", String(value));
+  }, []);
+  const setMode = useCallback((value: ChartMode) => {
+    setChartMode(value);
+    localStorage.setItem("pa-chart-mode", value);
+  }, []);
+  const setComparePersisted = useCallback((value: boolean) => {
+    setCompare(value);
+    localStorage.setItem("pa-chart-compare", value ? "1" : "0");
   }, []);
 
   useEffect(() => {
@@ -146,27 +121,27 @@ export default function App() {
 
   const patchFilters = useCallback(
     (patch: Partial<Filters>) => {
-      const next = { ...filters, ...patch };
-      for (const key of Object.keys(patch)) {
-        const value = (patch as Record<string, unknown>)[key];
-        if (value === undefined || value === "" || value === false) {
-          if (key === "me" || key === "bots" || key === "engaged") {
-            (next as Record<string, unknown>)[key] = Boolean(value);
-          } else {
-            delete (next as Record<string, unknown>)[key];
-          }
-        }
-      }
       setPerPage(30);
-      setParams(toParams(next));
+      setParams(toParams(mergeFilters(filters, patch)));
     },
     [filters, setParams],
   );
 
+  /** Reset content slices but keep the period and the noise switches. */
   const clearFilters = useCallback(() => {
     setPerPage(30);
-    setParams(new URLSearchParams({ range: filters.range, ...(filters.me ? { me: "1" } : {}) }));
-  }, [filters.me, filters.range, setParams]);
+    const next: Filters = {
+      range: filters.range,
+      me: filters.me,
+      bots: filters.bots,
+      hide_dc: filters.hide_dc,
+    };
+    if (filters.range === "custom") {
+      next.from = filters.from;
+      next.to = filters.to;
+    }
+    setParams(toParams(next));
+  }, [filters, setParams]);
 
   const toggleTheme = useCallback((event?: MouseEvent<HTMLButtonElement>) => {
     const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
@@ -252,86 +227,98 @@ export default function App() {
       ) : visitorMatch ? (
         <VisitorPage vid={decodeURIComponent(visitorMatch[1])} />
       ) : (
-        <>
-          <main className="mx-auto max-w-[1600px] space-y-10 px-4 py-6 md:px-6">
-            <ActiveFilters filters={filters} onPatch={patchFilters} onClear={clearFilters} />
+        <main className="mx-auto max-w-[1600px] space-y-10 px-4 py-6 md:px-6">
+          <ActiveFilters filters={filters} onPatch={patchFilters} onClear={clearFilters} />
 
-            {error ? (
-              <div className="card flex items-center justify-between gap-3 p-5">
-                <span className="text-[13px]" style={{ color: "var(--danger)" }}>
-                  {error}
-                </span>
-                <button type="button" className="btn" onClick={() => setReloadKey((value) => value + 1)}>
-                  {t("app.retry")}
-                </button>
-              </div>
-            ) : null}
+          {error ? (
+            <div className="card flex items-center justify-between gap-3 p-5">
+              <span className="text-[13px]" style={{ color: "var(--danger)" }}>
+                {error}
+              </span>
+              <button type="button" className="btn" onClick={() => setReloadKey((value) => value + 1)}>
+                {t("app.retry")}
+              </button>
+            </div>
+          ) : null}
 
-            {!data ? (
-              <div className="py-24 text-center text-[13px] text-ink-faint">{t("app.loading")}</div>
-            ) : (
-              <>
-                <KpiSection
-                  kpi={data.kpi}
+          {!data ? (
+            <div className="py-24 text-center text-[13px] text-ink-faint">{t("app.loading")}</div>
+          ) : (
+            <>
+              <KpiSection
+                kpi={data.kpi}
+                points={data.timeseries.points}
+                metric={metric}
+                onMetric={setMetric}
+                engagedActive={Boolean(filters.engaged)}
+                onEngaged={() => patchFilters({ engaged: !filters.engaged })}
+                insights={data.insights}
+                onProject={(id) => patchFilters({ project: filters.project === id ? undefined : id })}
+                onSource={(key) => patchFilters({ source: filters.source === key ? undefined : key })}
+              />
+
+              <section>
+                <SectionHead
+                  index="§02"
+                  title={t("section.02")}
+                  right={<span className="text-[12.5px] text-ink-faint">{t(`chart.${metric}`)}</span>}
+                />
+                <Chart
                   points={data.timeseries.points}
+                  prevPoints={data.prev_timeseries?.points ?? []}
                   metric={metric}
                   onMetric={setMetric}
-                  engagedActive={Boolean(filters.engaged)}
-                  onEngaged={() => patchFilters({ engaged: !filters.engaged })}
-                  insights={data.insights}
-                  onProject={(id) => patchFilters({ project: filters.project === id ? undefined : id })}
-                  onSource={(key) => patchFilters({ source: filters.source === key ? undefined : key })}
+                  conversionRate={data.kpi.goals.conversion_rate}
+                  heatmap={data.heatmap}
+                  heatmapMax={data.heatmap_max}
+                  mode={chartMode}
+                  onMode={setMode}
+                  compare={compare}
+                  onCompare={setComparePersisted}
+                  filters={filters}
+                  onPatch={patchFilters}
                 />
+              </section>
 
-                <section>
-                  <SectionHead
-                    index="§02"
-                    title={t("section.02")}
-                    right={<span className="text-[12.5px] text-ink-faint">{t(`chart.${metric}`)}</span>}
-                  />
-                  <Chart
-                    points={data.timeseries.points}
-                    prevPoints={data.prev_timeseries?.points ?? []}
-                    metric={metric}
-                    onMetric={setMetric}
-                    conversionRate={data.kpi.goals.conversion_rate}
-                    heatmap={data.heatmap}
-                    heatmapMax={data.heatmap_max}
-                  />
-                </section>
+              <IntelligenceSection
+                data={data}
+                filters={filters}
+                onPatch={patchFilters}
+                onOpenSession={setDrawerSid}
+              />
+              <AudienceSection data={data} filters={filters} onPatch={patchFilters} />
 
-                <IntelligenceSection data={data} filters={filters} onPatch={patchFilters} />
-                <AudienceSection data={data} filters={filters} onPatch={patchFilters} />
+              <SessionsFeed
+                items={data.sessions.items}
+                total={data.sessions.total}
+                counts={data.sessions.counts}
+                perPage={perPage}
+                loadingMore={loading}
+                onMore={() => setPerPage((value) => value + 30)}
+                onOpen={setDrawerSid}
+                filters={filters}
+                onPatch={patchFilters}
+              />
 
-                <SessionsFeed
-                  items={data.sessions.items}
-                  total={data.sessions.total}
-                  perPage={perPage}
-                  loadingMore={loading}
-                  onMore={() => setPerPage((value) => value + 30)}
-                  onOpen={setDrawerSid}
-                />
-
-                <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-4 pb-8">
-                  <span className="mono text-[11.5px] text-ink-faint">
-                    {new Date(data.meta.generated_at).toLocaleTimeString(lang === "ru" ? "ru-RU" : "en-GB", {
-                      timeZone: "Europe/Moscow",
-                    })}{" "}
-                    MSK · {t("footer.note")}
-                  </span>
-                  <span className="mono text-[11.5px] text-ink-faint">{t("footer.privacy")}</span>
-                </footer>
-              </>
-            )}
-          </main>
-
-          <SessionDrawer
-            sid={drawerSid}
-            onClose={() => setDrawerSid(null)}
-            onChanged={() => setReloadKey((value) => value + 1)}
-          />
-        </>
+              <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-4 pb-8">
+                <span className="mono text-[12px] text-ink-faint">
+                  {new Date(data.meta.generated_at).toLocaleTimeString(lang === "ru" ? "ru-RU" : "en-GB", {
+                    timeZone: "Europe/Moscow",
+                  })}{" "}
+                  MSK · {t("footer.note")}
+                </span>
+                <span className="mono text-[12px] text-ink-faint">{t("footer.privacy")}</span>
+              </footer>
+            </>
+          )}
+        </main>
       )}
+
+      <SessionDrawer
+        sid={drawerSid}
+        onClose={() => setDrawerSid(null)}
+        onChanged={() => setReloadKey((value) => value + 1)}
+      />
 
       <DataModal
         open={dataOpen}

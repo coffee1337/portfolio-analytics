@@ -96,7 +96,7 @@ export function VisitorPage({ vid }: { vid: string }) {
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-faint">
           <span className="mono">
-            {fmtDate(visitor.first_seen)} → {fmtDate(visitor.last_seen)}
+            {fmtDate(visitor.first_seen, lang)} → {fmtDate(visitor.last_seen, lang)}
           </span>
           {visitor.is_me ? <Badge tone="accent">{t("sessions.me")}</Badge> : null}
           {visitor.is_bot ? <Badge tone="danger">{t("sessions.bot")}</Badge> : null}
@@ -108,8 +108,8 @@ export function VisitorPage({ vid }: { vid: string }) {
           <h2 className="card-title">{t("detail.metrics")}</h2>
           <Stat label={t("detail.sessions")} value={fmtNum(visitor.sessions)} />
           <Stat label={t("detail.totalTime")} value={fmtDuration(visitor.active_sec, lang)} />
-          <Stat label={t("detail.firstSeen")} value={fmtDate(visitor.first_seen)} />
-          <Stat label={t("detail.lastSeen")} value={fmtDate(visitor.last_seen)} />
+          <Stat label={t("detail.firstSeen")} value={fmtDate(visitor.first_seen, lang)} />
+          <Stat label={t("detail.lastSeen")} value={fmtDate(visitor.last_seen, lang)} />
         </div>
 
         <div className="card space-y-3.5 p-5">
@@ -160,7 +160,7 @@ export function VisitorPage({ vid }: { vid: string }) {
               onClick={() => navigate(`/session/${encodeURIComponent(session.sid)}${window.location.search}`)}
             >
               <span className="mono text-[13px] text-ink">
-                {fmtDate(session.start)} {fmtClock(session.start)}
+                {fmtDate(session.start, lang)} {fmtClock(session.start)}
                 <span className="ml-2 text-[12px] text-ink-faint">{t("sessions.visit", { n: session.visit_index })}</span>
               </span>
               <span className="flex flex-wrap items-center gap-3 text-[12.5px] text-ink-dim">

@@ -1,4 +1,11 @@
-export type Metric = "visits" | "visitors" | "engaged" | "pageviews" | "goals" | "avg_sec";
+export type Metric =
+  | "visits"
+  | "visitors"
+  | "engaged"
+  | "bounce_rate"
+  | "pageviews"
+  | "goals"
+  | "avg_sec";
 
 export interface Filters {
   range: string;
@@ -21,6 +28,11 @@ export interface Filters {
   project?: string;
   goal?: string;
   engaged?: boolean;
+  hide_dc?: boolean;
+  dow?: number;
+  hour?: number;
+  q?: string;
+  tab?: string;
 }
 
 export interface KpiBlock {
@@ -46,6 +58,8 @@ export interface Point {
   engaged: number;
   pageviews: number;
   goals: number;
+  bounces: number;
+  bounce_rate: number;
   avg_sec: number;
 }
 
@@ -60,6 +74,8 @@ export interface Row {
   source?: string;
   medium?: string;
   campaign?: string;
+  avg_sec?: number;
+  switches?: number;
 }
 
 export interface SessionItem {
@@ -106,7 +122,7 @@ export interface Insights {
   project: { id: string; score: number; actions: number } | null;
   source: { key: string; sessions: number } | null;
   deep: { section: string; sessions: number; pct: number };
-  peak: { kind: string; label: string; visits: number } | null;
+  peak: { kind: string; label: string; visits: number; weekday?: number } | null;
   sessions: number;
 }
 
@@ -121,6 +137,7 @@ export interface Overview {
     truncated: boolean;
     bots_hidden: number;
     me_hidden: number;
+    dc_hidden: number;
     live: number;
     events_5min: number;
     total_sessions: number;
@@ -149,6 +166,7 @@ export interface Overview {
     clone_copy: number;
     score: number;
     weight: number;
+    avg_sec: number;
   }[];
   goals: {
     key: string;
@@ -170,9 +188,19 @@ export interface Overview {
   acquisition: { sources: Row[]; utm: Row[] };
   geo: { countries: Row[]; cities: Row[]; isps: Row[] };
   devices: { types: Row[]; os: Row[]; browsers: Row[]; screens: Row[] };
-  preferences: { languages: Row[]; themes: Row[] };
+  preferences: { languages: Row[]; site_langs: Row[]; themes: Row[] };
+  clicks: {
+    outbound: { key: string; clicks: number; sessions: number; share: number }[];
+    buttons: { key: string; clicks: number; sessions: number; share: number }[];
+  };
   paths: { entry: Row[]; all: Row[] };
-  sessions: { total: number; page: number; per_page: number; items: SessionItem[] };
+  sessions: {
+    total: number;
+    page: number;
+    per_page: number;
+    counts: { all: number; engaged: number; goals: number; live: number; bounce: number };
+    items: SessionItem[];
+  };
 }
 
 export interface SessionDetail {

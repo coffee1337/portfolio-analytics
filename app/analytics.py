@@ -12,6 +12,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
+import threading
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -24,6 +27,11 @@ from sqlalchemy.orm import Session
 
 from .ingest import as_utc
 from .models import Event, IgnoredIdentity, utcnow
+
+SITE_KEY = os.environ.get("SITE_KEY", "portfolio-dev-key")
+OVERVIEW_TTL = 5.0
+_overview_cache: dict[str, tuple[float, dict]] = {}
+_overview_lock = threading.Lock()
 
 MSK = ZoneInfo("Europe/Moscow")
 LIVE_WINDOW = timedelta(minutes=5)
@@ -130,6 +138,30 @@ COLUMN_KEYS = [
 ]
 
 
+def invalidate_overview_cache() -> None:
+    with _overview_lock:
+        _overview_cache.clear()
+
+
+def _cache_get(key: str) -> dict | None:
+    with _overview_lock:
+        item = _overview_cache.get(key)
+        if not item:
+            return None
+        stored_at, payload = item
+        if time.time() - stored_at > OVERVIEW_TTL:
+            _overview_cache.pop(key, None)
+            return None
+        return payload
+
+
+def _cache_put(key: str, payload: dict) -> None:
+    with _overview_lock:
+        if len(_overview_cache) > 64:
+            _overview_cache.clear()
+        _overview_cache[key] = (time.time(), payload)
+
+
 # --------------------------------------------------------------------------- #
 # filters
 # --------------------------------------------------------------------------- #
@@ -161,6 +193,11 @@ class Filters:
     project: str = ""
     goal: str = ""
     engaged: bool = False
+    hide_dc: bool = False
+    dow: int | None = None
+    hour: int | None = None
+    q: str = ""
+    tab: str = "all"
 
     @classmethod
     def from_query(cls, params: Any) -> "Filters":
@@ -169,6 +206,16 @@ class Filters:
 
         def flag(name: str) -> bool:
             return str(params.get(name, "0")).lower() in ("1", "true", "yes", "on")
+
+        def number(name: str, low: int, high: int) -> int | None:
+            raw = get(name, 4)
+            if not raw:
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                return None
+            return value if low <= value <= high else None
 
         range_key = get("range") or "all" if (get("from") and get("to")) else (get("range") or "7d")
         if range_key not in RANGE_KEYS:
@@ -194,6 +241,11 @@ class Filters:
             project=PROJECT_ALIASES.get(get("project").lower(), get("project")),
             goal=get("goal"),
             engaged=flag("engaged"),
+            hide_dc=flag("hide_dc"),
+            dow=number("dow", 0, 6),
+            hour=number("hour", 0, 23),
+            q=get("q", 120),
+            tab=get("tab") if get("tab") in ("all", "engaged", "goals", "live", "bounce") else "all",
         )
 
     def as_dict(self) -> dict[str, str]:
@@ -218,6 +270,11 @@ class Filters:
             "project": self.project,
             "goal": self.goal,
             "engaged": "1" if self.engaged else "0",
+            "hide_dc": "1" if self.hide_dc else "0",
+            "dow": "" if self.dow is None else str(self.dow),
+            "hour": "" if self.hour is None else str(self.hour),
+            "q": self.q,
+            "tab": "" if self.tab == "all" else self.tab,
         }
         return {key: value for key, value in data.items() if value not in ("", "0")} | {
             "range": self.range_key
@@ -299,7 +356,7 @@ def load_rows(
 ) -> tuple[list[dict], bool]:
     query: Select = (
         select(*EVENT_COLUMNS)
-        .where(Event.ts >= start, Event.ts < end)
+        .where(Event.site_key == SITE_KEY, Event.ts >= start, Event.ts < end)
         .order_by(Event.ts.asc(), Event.id.asc())
     )
     if where is not None:
@@ -396,7 +453,7 @@ def goal_of(row: dict) -> str:
     # Legacy beacons: downloads were reported as generic clicks.
     if name == "click" and str(props.get("kind")) in ("download", "resume"):
         return "resume"
-    if name == "click" and str(props.get("kind")) == "mailto":
+    if name == "click" and str(props.get("kind")) in ("mailto", "telegram", "linkedin", "github", "social"):
         return "social"
     return ""
 
@@ -454,6 +511,9 @@ class SessionRow:
     utm_campaign: str = ""
     entry_path: str = ""
     first_title: str = ""
+    site_lang: str = ""
+    theme: str = ""
+    page_durations: dict[str, float] = field(default_factory=dict)
 
     @property
     def source(self) -> str:
@@ -524,6 +584,8 @@ class SessionRow:
             },
             "entry_path": self.entry_path,
             "title": self.first_title,
+            "site_lang": self.site_lang,
+            "theme": self.theme,
             "engaged": self.engaged,
             "bounce": self.bounce,
             "live": self.live,
@@ -601,6 +663,44 @@ def _fill_session_metrics(session: SessionRow) -> None:
         session.duration = round(sum(active_by_page.values()), 1)
     else:
         session.duration = round(min(gaps, 4 * 3600), 1)
+        if len(session.pages) == 1:
+            only_page = next(iter(session.pages))
+            active_by_page[only_page] = session.duration
+    if len(session.pages) == 1:
+        only_page = next(iter(session.pages))
+        active_by_page.setdefault(only_page, session.duration)
+    session.page_durations = {page: round(value, 1) for page, value in active_by_page.items()}
+
+    # Site language (HTML lang of the page) and theme come from props now.
+    for row in items:
+        props = row["p"]
+        site_lang = str(props.get("site_lang") or "").lower()[:8]
+        if site_lang in ("ru", "en"):
+            session.site_lang = site_lang
+            break
+    if not session.site_lang:
+        session.site_lang = "ru" if (session.entry_path or "").startswith("/ru") else "en"
+
+    theme = ""
+    for row in items:
+        if row["name"] == "theme_switch":
+            to = str(row["p"].get("to") or "").lower()
+            if to in ("dark", "light"):
+                theme = to
+    if not theme:
+        for row in items:
+            value = str(row["p"].get("theme") or "").lower()
+            if value in ("dark", "light"):
+                theme = value
+                break
+    session.theme = theme or "dark"
+
+    if not session.entry_path:
+        session.entry_path = (items[0]["path"] or "/") if items else "/"
+        if items:
+            session.first_title = items[0]["title"]
+            session.referrer = items[0]["referrer"] or session.referrer
+        session.pages.add(session.entry_path)
     # Header fields describe the visit as a whole: first non-empty wins.
     for key in (
         "country",
@@ -676,7 +776,41 @@ def session_matches(session: SessionRow, filters: Filters) -> bool:
         return False
     if filters.engaged and not session.engaged:
         return False
+    if filters.hide_dc and session.is_datacenter:
+        return False
+    if filters.dow is not None or filters.hour is not None:
+        local = session.start.astimezone(MSK)
+        if filters.dow is not None and local.weekday() != filters.dow:
+            return False
+        if filters.hour is not None and local.hour != filters.hour:
+            return False
+    if filters.q and filters.q.lower() not in session_search_blob(session):
+        return False
     return True
+
+
+def session_search_blob(session: SessionRow) -> str:
+    parts = [
+        session.city,
+        session.country,
+        session.region,
+        session.isp,
+        session.asn,
+        session.ip_masked,
+        session.source,
+        session.referrer,
+        session.entry_path,
+        session.sid,
+        session.visitor,
+        session.os_name,
+        session.browser,
+        session.utm_source,
+        session.utm_medium,
+        session.utm_campaign,
+        *session.pages,
+        *session.projects,
+    ]
+    return " ".join(part for part in parts if part).lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -776,7 +910,7 @@ def timeseries(sessions: list[SessionRow], start: datetime, end: datetime, bucke
     index = {point: position for position, point in enumerate(points)}
     visitors: list[set[str]] = [set() for _ in points]
     counters = [
-        {"visits": 0, "pageviews": 0, "goals": 0, "engaged": 0, "duration": 0.0}
+        {"visits": 0, "pageviews": 0, "goals": 0, "engaged": 0, "bounces": 0, "duration": 0.0}
         for _ in points
     ]
     for session in sessions:
@@ -788,6 +922,7 @@ def timeseries(sessions: list[SessionRow], start: datetime, end: datetime, bucke
         counters[position]["pageviews"] += session.pageviews
         counters[position]["goals"] += len(session.goals)
         counters[position]["engaged"] += 1 if session.engaged else 0
+        counters[position]["bounces"] += 0 if session.engaged else 1
         counters[position]["duration"] += session.duration
         visitors[position].add(session.visitor)
     out = []
@@ -802,6 +937,8 @@ def timeseries(sessions: list[SessionRow], start: datetime, end: datetime, bucke
                 "engaged": item["engaged"],
                 "pageviews": item["pageviews"],
                 "goals": item["goals"],
+                "bounces": item["bounces"],
+                "bounce_rate": pct(item["bounces"], item["visits"]),
                 "avg_sec": round(item["duration"] / item["visits"], 1) if item["visits"] else 0.0,
             }
         )
@@ -814,14 +951,16 @@ def funnel(sessions: list[SessionRow]) -> dict:
     loader_skip = sum(1 for session in home if session.loader == "skip")
     steps = []
     for section in SECTIONS:
-        steps.append({"key": section, "sessions": sum(1 for session in home if section in session.sections)})
+        reached = sum(1 for session in home if section in session.sections)
+        # A section that is not rendered on the site (e.g. empty testimonials)
+        # must not leave a dead 0% step in the funnel.
+        if section == "reviews" and reached == 0:
+            continue
+        steps.append({"key": section, "sessions": reached})
     for position, step in enumerate(steps):
         step["share"] = pct(step["sessions"], len(home))
-        step["drop"] = (
-            pct(step["sessions"] - steps[position - 1]["sessions"], steps[position - 1]["sessions"])
-            if position
-            else 0.0
-        )
+        previous = steps[position - 1]["sessions"] if position else 0
+        step["drop"] = pct(step["sessions"] - previous, previous) if previous > 0 else 0.0
     return {
         "home_sessions": len(home),
         "loader": {
@@ -839,7 +978,17 @@ def funnel(sessions: list[SessionRow]) -> dict:
 
 def project_matrix(sessions: list[SessionRow]) -> list[dict]:
     stats: dict[str, Counter] = {project: Counter() for project in PROJECT_IDS}
+    case_seconds: Counter = Counter()
+    case_views: Counter = Counter()
     for session in sessions:
+        for page in session.pages:
+            case_project = project_from_path(page)
+            if case_project:
+                case_views[case_project] += 1
+                value = session.page_durations.get(page)
+                if value is None and len(session.pages) == 1:
+                    value = session.duration
+                case_seconds[case_project] += value or 0.0
         for row in session.events:
             name = row["name"]
             props = row["p"]
@@ -879,6 +1028,7 @@ def project_matrix(sessions: list[SessionRow]) -> list[dict]:
                 "demo": counter["demo"],
                 "clone_copy": counter["clone_copy"],
                 "score": score,
+                "avg_sec": round(case_seconds[project] / case_views[project], 1) if case_views[project] else 0.0,
             }
         )
     top = max((row["score"] for row in rows), default=0)
@@ -945,17 +1095,24 @@ def breakdown(
 def pages_breakdown(sessions: list[SessionRow], limit: int = 12) -> tuple[list[dict], list[dict]]:
     entries: Counter = Counter()
     views: Counter = Counter()
+    seconds: Counter = Counter()
     for session in sessions:
         entries[session.entry_path or "/"] += 1
         for page in session.pages:
             views[page] += 1
+            seconds[page] += session.page_durations.get(page, 0.0)
     total = len(sessions)
     entry_rows = [
         {"key": value, "sessions": count, "share": pct(count, total)}
         for value, count in entries.most_common(limit)
     ]
     view_rows = [
-        {"key": value, "sessions": count, "share": pct(count, sum(views.values()))}
+        {
+            "key": value,
+            "sessions": count,
+            "share": pct(count, sum(views.values())),
+            "avg_sec": round(seconds[value] / count, 1) if count else 0.0,
+        }
         for value, count in views.most_common(limit)
     ]
     return entry_rows, view_rows
@@ -1040,15 +1197,36 @@ def interactive_stats(sessions: list[SessionRow]) -> dict:
 
 
 def themes(sessions: list[SessionRow]) -> list[dict]:
+    """Theme per visit (not only manual switches), plus switch counter."""
     counter: Counter = Counter()
+    switches = 0
     for session in sessions:
+        if session.theme in ("dark", "light"):
+            counter[session.theme] += 1
         for row in session.events:
             if row["name"] == "theme_switch":
-                to = str(row["p"].get("to") or "").lower()
-                if to in ("dark", "light"):
-                    counter[to] += 1
+                switches += 1
     total = sum(counter.values())
-    return [{"key": key, "count": count, "share": pct(count, total)} for key, count in counter.most_common()]
+    rows = [
+        {"key": key, "count": count, "share": pct(count, total)}
+        for key, count in counter.most_common()
+    ]
+    for row in rows:
+        row["switches"] = switches
+        row["sessions"] = row["count"]
+    return rows
+
+
+def site_langs(sessions: list[SessionRow]) -> list[dict]:
+    counter: Counter = Counter()
+    for session in sessions:
+        if session.site_lang:
+            counter[session.site_lang] += 1
+    total = sum(counter.values())
+    return [
+        {"key": key, "sessions": count, "share": pct(count, total)}
+        for key, count in counter.most_common()
+    ]
 
 
 def languages(sessions: list[SessionRow]) -> list[dict]:
@@ -1072,17 +1250,74 @@ def visit_counters(sessions: list[SessionRow]) -> Counter:
     return counters
 
 
+def tab_match(session: SessionRow, tab: str) -> bool:
+    if tab == "engaged":
+        return session.engaged
+    if tab == "goals":
+        return bool(session.goals)
+    if tab == "live":
+        return session.live
+    if tab == "bounce":
+        return session.bounce
+    return True
+
+
+def _chunks(values: list[str], size: int = 400) -> Iterable[list[str]]:
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
+
+
+def lifetime_session_index(db: Session, sessions: list[SessionRow]) -> dict[str, int]:
+    """1-based lifetime visit number for every session of the given visitors."""
+    visitors = sorted({session.visitor for session in sessions if session.visitor})
+    if not visitors:
+        return {}
+    index: dict[str, int] = {}
+    for chunk in _chunks(visitors):
+        rows = db.execute(
+            select(Event.visitor, Event.session_id, func.min(Event.ts))
+            .where(Event.site_key == SITE_KEY, Event.visitor.in_(chunk), Event.session_id != "")
+            .group_by(Event.visitor, Event.session_id)
+            .order_by(func.min(Event.ts).asc())
+        ).all()
+        counter: Counter = Counter()
+        for visitor, sid, _ in rows:
+            counter[visitor] += 1
+            index[sid] = counter[visitor]
+    return index
+
+
 def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30) -> dict:
+    key = f"{SITE_KEY}|{filters.cache_key()}|{page}|{per_page}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    payload = _overview(db, filters, page=page, per_page=per_page)
+    _cache_put(key, payload)
+    return payload
+
+
+def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30) -> dict:
     start, end, prev_start, prev_end, bucket = range_bounds(db, filters)
     rows, truncated = load_rows(db, start, end, show_me=filters.show_me, show_bots=filters.show_bots)
     all_sessions = build_sessions(rows)
-    sessions = [session for session in all_sessions if session_matches(session, filters)]
-    counters = visit_counters(sessions)
+    filtered = [session for session in all_sessions if session_matches(session, filters)]
+    tab_counts = {
+        "all": len(filtered),
+        "engaged": sum(1 for session in filtered if session.engaged),
+        "goals": sum(1 for session in filtered if session.goals),
+        "live": sum(1 for session in filtered if session.live),
+        "bounce": sum(1 for session in filtered if session.bounce),
+    }
+    sessions = [session for session in filtered if tab_match(session, filters.tab)]
+    counters = lifetime_session_index(db, sessions)
     current = summarise(sessions)
 
     prev_rows, _ = load_rows(db, prev_start, prev_end, show_me=filters.show_me, show_bots=filters.show_bots)
     prev_sessions = [
-        session for session in build_sessions(prev_rows) if session_matches(session, filters)
+        session
+        for session in build_sessions(prev_rows)
+        if session_matches(session, filters) and tab_match(session, filters.tab)
     ]
     previous = summarise(prev_sessions) if prev_sessions else None
     show_delta = filters.range_key != "all" and previous is not None
@@ -1128,14 +1363,21 @@ def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30
 
     bots_count = db.scalar(
         select(func.count(func.distinct(Event.session_id))).where(
-            Event.ts >= start, Event.ts < end, Event.is_bot.is_(True)
+            Event.site_key == SITE_KEY, Event.ts >= start, Event.ts < end, Event.is_bot.is_(True)
         )
     ) or 0
     me_count = db.scalar(
         select(func.count(func.distinct(Event.session_id))).where(
-            Event.ts >= start, Event.ts < end, Event.is_me.is_(True)
+            Event.site_key == SITE_KEY, Event.ts >= start, Event.ts < end, Event.is_me.is_(True)
         )
     ) or 0
+    dc_query = select(func.count(func.distinct(Event.session_id))).where(
+        Event.site_key == SITE_KEY, Event.ts >= start, Event.ts < end, Event.is_datacenter.is_(True)
+    )
+    if not filters.show_bots:
+        # bots never reach the session list, so they must not inflate the "hidden by DC" badge
+        dc_query = dc_query.where(Event.is_bot.is_(False))
+    dc_count = db.scalar(dc_query) or 0
     live_rows = [
         session for session in all_sessions if session.live and not (session.is_bot and not filters.show_bots)
     ]
@@ -1168,11 +1410,13 @@ def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30
             "truncated": truncated,
             "bots_hidden": 0 if filters.show_bots else int(bots_count),
             "me_hidden": 0 if filters.show_me else int(me_count),
+            "dc_hidden": 0 if filters.hide_dc else int(dc_count),
             "live": len(live_rows),
             "events_5min": sum(
                 1 for session in all_sessions for row in session.events if (utcnow() - row["ts"]) <= LIVE_WINDOW
             ),
             "total_sessions": total,
+            "tab": filters.tab,
         },
         "kpi": kpi,
         "prev": previous,
@@ -1203,12 +1447,18 @@ def overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 30
             "browsers": breakdown(sessions, "browser"),
             "screens": breakdown(sessions, "screen"),
         },
-        "preferences": {"languages": languages(sessions), "themes": themes(sessions)},
+        "preferences": {
+            "languages": languages(sessions),
+            "site_langs": site_langs(sessions),
+            "themes": themes(sessions),
+        },
+        "clicks": clicks_breakdown(sessions),
         "paths": {"entry": entries, "all": views},
         "sessions": {
             "total": total,
             "page": page,
             "per_page": per_page,
+            "counts": tab_counts,
             "items": [
                 session.to_dict(visit_index=counters.get(session.sid, 1)) for session in feed
             ],
@@ -1254,7 +1504,8 @@ def insights_block(
 
     peak = None
     points = series.get("points", [])
-    if points:
+    total_visits = sum(point["visits"] for point in points)
+    if points and total_visits > 0:
         best = max(points, key=lambda point: point["visits"])
         if series.get("bucket") == "hour":
             peak = {"kind": "hour", "label": best["label"], "visits": best["visits"]}
@@ -1263,13 +1514,25 @@ def insights_block(
             totals = [sum(row) for row in cells]
             if any(totals):
                 index = totals.index(max(totals))
-                peak = {"kind": "weekday", "label": WEEKDAYS_RU[index], "visits": totals[index]}
+                peak = {
+                    "kind": "weekday",
+                    "weekday": index,
+                    "label": WEEKDAYS_RU[index],
+                    "visits": totals[index],
+                }
             else:
                 peak = {"kind": "day", "label": best["label"], "visits": best["visits"]}
 
     return {
         "project": (
-            {"id": top_project["id"], "score": top_project["score"], "actions": top_project["score"]}
+            {
+                "id": top_project["id"],
+                "score": top_project["score"],
+                "actions": sum(
+                    top_project.get(key, 0)
+                    for key in ("select", "details", "case_page", "github", "demo", "clone_copy")
+                ),
+            }
             if top_project
             else None
         ),
@@ -1284,6 +1547,76 @@ def insights_block(
         "peak": peak,
         "sessions": len(sessions),
     }
+
+
+LETTERS = set("abcdefghijklmnopqrstuvwxyzабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789")
+
+
+def _readable(label: str) -> bool:
+    return any(char.lower() in LETTERS for char in label or "")
+
+
+def clicks_breakdown(sessions: list[SessionRow]) -> dict:
+    """Top outbound links/channels and top in-page actions."""
+    outbound: Counter = Counter()
+    outbound_sessions: dict[str, set[str]] = {}
+    buttons: Counter = Counter()
+    button_sessions: dict[str, set[str]] = {}
+
+    def bump(counter: Counter, seen: dict[str, set[str]], key: str, sid: str) -> None:
+        counter[key] += 1
+        seen.setdefault(key, set()).add(sid)
+
+    for session in sessions:
+        for row in session.events:
+            name = row["name"]
+            props = row["p"]
+            if name == "social_click":
+                network = str(props.get("network") or "social")
+                bump(outbound, outbound_sessions, f"social: {network}", session.sid)
+            elif name == "project_action":
+                action = str(props.get("action") or "")
+                project = normalise_project(props.get("project")) or "project"
+                label = str(props.get("href") or props.get("url") or "")
+                if action in ("github", "demo", "docs"):
+                    key = label or f"{project} · {action}"
+                    bump(outbound, outbound_sessions, key, session.sid)
+                elif action == "clone_copy":
+                    bump(buttons, button_sessions, f"{project} · git clone", session.sid)
+            elif name == "resume":
+                action = str(props.get("action") or "download_pdf")
+                bump(outbound, outbound_sessions, f"resume · {action}", session.sid)
+            elif name == "click":
+                kind = str(props.get("kind") or "")
+                target = str(props.get("target") or "")
+                if kind not in ("", "anchor") and _readable(target or kind):
+                    bump(outbound, outbound_sessions, target or kind, session.sid)
+            elif name == "entry_cta":
+                bump(buttons, button_sessions, f"entry: {props.get('card') or 'card'}", session.sid)
+            elif name == "contact_copy":
+                bump(buttons, button_sessions, f"copy: {props.get('channel') or 'contact'}", session.sid)
+            elif name == "project_details":
+                project = normalise_project(props.get("project")) or "project"
+                bump(buttons, button_sessions, f"{project} · details", session.sid)
+            elif name == "ui":
+                text = str(props.get("text") or "").strip()[:48]
+                if _readable(text):
+                    bump(buttons, button_sessions, text, session.sid)
+
+    total = len(sessions)
+
+    def rows(counter: Counter, seen: dict[str, set[str]], limit: int = 12) -> list[dict]:
+        return [
+            {
+                "key": key,
+                "clicks": count,
+                "sessions": len(seen.get(key, ())),
+                "share": pct(len(seen.get(key, ())), total),
+            }
+            for key, count in counter.most_common(limit)
+        ]
+
+    return {"outbound": rows(outbound, outbound_sessions), "buttons": rows(buttons, button_sessions)}
 
 def _utm_rows(sessions: list[SessionRow], limit: int = 12) -> list[dict]:
     counter: Counter = Counter()
@@ -1368,12 +1701,14 @@ def session_detail(db: Session, sid: str) -> dict | None:
         return None
     visitor_sessions = db.scalars(
         select(Event.session_id)
-        .where(Event.visitor == session.visitor)
+        .where(Event.site_key == SITE_KEY, Event.visitor == session.visitor)
         .group_by(Event.session_id)
-        .order_by(func.min(Event.ts).desc())
+        .order_by(func.min(Event.ts).asc())
     ).all()
+    ordered = [sid_value for sid_value in visitor_sessions if sid_value]
+    visit_index = ordered.index(sid) + 1 if sid in ordered else 1
     return {
-        "session": session.to_dict(visit_index=len(visitor_sessions)),
+        "session": session.to_dict(visit_index=visit_index),
         "events": events,
         "visitor": {
             "id": session.visitor,
@@ -1436,7 +1771,7 @@ def collect_filtered(db: Session, filters: Filters) -> list[SessionRow]:
 
 def export_sessions_csv(db: Session, filters: Filters) -> str:
     sessions = collect_filtered(db, filters)
-    counters = visit_counters(sessions)
+    counters = lifetime_session_index(db, sessions)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(

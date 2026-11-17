@@ -115,13 +115,13 @@ export function SessionDrawer({
           >
             <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
               <div className="min-w-0">
-                <div className="kicker kicker--accent mb-1">§S / session</div>
+                <div className="kicker kicker--accent mb-1">§06 / session</div>
                 <h2 className="font-display text-[19px] font-bold leading-tight text-ink">
                   {session ? `${fmtClock(session.start)} · ${fmtDuration(session.duration, lang)}` : t("app.loading")}
                 </h2>
                 {session ? (
                   <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <span className="mono text-[12px] text-ink-faint">{fmtDate(session.start)}</span>
+                    <span className="mono text-[12px] text-ink-faint">{fmtDate(session.start, lang)}</span>
                     <Badge tone={session.engaged ? "ok" : "danger"}>
                       {session.engaged ? t("detail.engaged") : t("detail.bounce")}
                     </Badge>
@@ -204,7 +204,15 @@ export function SessionDrawer({
             </div>
 
             <footer className="flex flex-wrap items-center gap-2 border-t border-line px-5 py-3">
-              <button type="button" className="btn btn--accent" onClick={() => navigate(`/session/${sid}`)}>
+              <button
+                type="button"
+                className="btn btn--accent"
+                onClick={() => {
+                  const target = `/session/${encodeURIComponent(sid)}${window.location.search}`;
+                  onClose();
+                  navigate(target);
+                }}
+              >
                 ↗ {t("sessions.drawer.full")}
               </button>
               <button type="button" className="btn" onClick={markMe} disabled={busy || session?.is_me}>
