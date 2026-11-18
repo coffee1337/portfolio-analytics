@@ -331,7 +331,7 @@ export function Clicks({ data }: { data: Overview }) {
   const max = Math.max(1, ...rows.map((row) => row.clicks));
 
   return (
-    <div className="card flex h-full flex-col p-5 md:p-6 xl:col-span-2">
+    <div className="card flex h-full flex-col p-5 md:p-6 lg:col-span-2">
       <CardTitle right={<span className="mono text-[12px] text-ink-faint">§03c</span>}>
         {t("clicks.title")}
       </CardTitle>

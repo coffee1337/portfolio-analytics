@@ -352,10 +352,6 @@ export function AudienceSection({
           </div>
         </Panel>
 
-        <div className="lg:col-span-2">
-          <VitalsPanel data={data.vitals} />
-        </div>
-
         <Panel title={t("audience.pages")}>
           <Tabs
             value={pages}
@@ -461,6 +457,10 @@ export function AudienceSection({
             ) : null}
           </div>
         </Panel>
+
+        <div className="lg:col-span-2">
+          <VitalsPanel data={data.vitals} />
+        </div>
       </div>
     </section>
   );
