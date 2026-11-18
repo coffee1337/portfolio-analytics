@@ -15,6 +15,7 @@ Design rules
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -323,6 +324,27 @@ def _from_ipwho(data: dict) -> GeoInfo | None:
     )
 
 
+# At most four provider calls in flight: a burst of first-time visitors must not
+# open hundreds of sockets. One semaphore per running loop — tests build several
+# loops, and a semaphore is bound to the loop it was created in.
+_PROVIDER_LIMIT = 4
+_SEMAPHORES: dict[int, asyncio.Semaphore] = {}
+_INFLIGHT: dict[tuple[int, str], asyncio.Task[GeoInfo | None]] = {}
+
+
+def _provider_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    semaphore = _SEMAPHORES.get(key)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_PROVIDER_LIMIT)
+        # Drop dead loops so the registry cannot grow with each test.
+        for stale in [item for item in _SEMAPHORES if item != key]:
+            _SEMAPHORES.pop(stale, None)
+        _SEMAPHORES[key] = semaphore
+    return semaphore
+
+
 async def lookup_geo(ip: str, client: httpx.AsyncClient | None = None) -> GeoInfo | None:
     """Ask the geo providers (ip-api first, ipwho.is as a fallback)."""
     if not GEO_LOOKUP or not is_public_ip(ip):
@@ -330,42 +352,66 @@ async def lookup_geo(ip: str, client: httpx.AsyncClient | None = None) -> GeoInf
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=2.5, follow_redirects=True)
     try:
-        try:
-            response = await client.get(
-                PRIMARY_URL.format(ip=ip), params={"fields": PRIMARY_FIELDS}
-            )
-            if response.status_code == 200:
-                info = _from_ip_api(response.json())
-                if info:
-                    return info
-        except (httpx.HTTPError, ValueError):
-            pass
-        try:
-            response = await client.get(FALLBACK_URL.format(ip=ip))
-            if response.status_code == 200:
-                info = _from_ipwho(response.json())
-                if info:
-                    return info
-        except (httpx.HTTPError, ValueError):
-            pass
-        return None
+        async with _provider_semaphore():
+            try:
+                response = await client.get(
+                    PRIMARY_URL.format(ip=ip), params={"fields": PRIMARY_FIELDS}
+                )
+                if response.status_code == 200:
+                    info = _from_ip_api(response.json())
+                    if info:
+                        return info
+            except (httpx.HTTPError, ValueError):
+                pass
+            try:
+                response = await client.get(FALLBACK_URL.format(ip=ip))
+                if response.status_code == 200:
+                    info = _from_ipwho(response.json())
+                    if info:
+                        return info
+            except (httpx.HTTPError, ValueError):
+                pass
+            return None
     finally:
         if own_client:
             await client.aclose()
 
 
 async def enrich_geo_async(ip: str, headers: Mapping[str, str] | None = None) -> GeoInfo:
-    """Cached enrichment; safe to await from a background task."""
+    """Cached enrichment with in-flight de-duplication, safe inside a background task.
+
+    Five events of one cold-start batch share an IP: without de-duplication they
+    would fire five identical provider lookups. Callers that arrive while a
+    lookup for the same IP is running await that same task instead.
+    """
     known = cached_geo(ip)
     if known:
         return known
-    info = await lookup_geo(ip)
+
+    loop = asyncio.get_running_loop()
+    key = (id(loop), ip)
+    task = _INFLIGHT.get(key)
+    owner = task is None
+    if task is None:
+        task = loop.create_task(_lookup_and_cache(ip))
+        _INFLIGHT[key] = task
+    try:
+        info = await asyncio.shield(task)
+    finally:
+        if owner:
+            _INFLIGHT.pop(key, None)
+
     if info is None:
         # Cache the negative result too, but keep CDN header data as a bonus.
         info = replace(header_geo(headers or {}), source="none")
         cache_geo(ip, info, NEGATIVE_TTL)
-        return info
-    cache_geo(ip, info)
+    return info
+
+
+async def _lookup_and_cache(ip: str) -> GeoInfo | None:
+    info = await lookup_geo(ip)
+    if info is not None:
+        cache_geo(ip, info)
     return info
 
 

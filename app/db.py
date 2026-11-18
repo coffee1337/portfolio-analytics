@@ -19,8 +19,20 @@ class Base(DeclarativeBase):
     pass
 
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        DATABASE_URL, pool_pre_ping=True, connect_args={"check_same_thread": False}
+    )
+else:
+    # Neon closes idle connections server-side: pre-ping plus a 5-minute recycle
+    # keeps the pool healthy without a restart storm on wake-up.
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=5,
+        max_overflow=5,
+    )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
@@ -66,6 +78,12 @@ EVENT_INDEXES: dict[str, str] = {
     "ix_events_visitor": "visitor",
     "ix_events_name": "name",
     "ix_events_ts": "ts",
+    # Composite indexes: every dashboard query filters by site_key + a ts range,
+    # groups by visitor, or hides datacenter traffic.
+    "ix_events_key_ts": "site_key, ts",
+    "ix_events_visitor_ts": "visitor, ts",
+    "ix_events_iphash_ts": "ip_hash, ts",
+    "ix_events_is_dc": "is_datacenter",
 }
 
 

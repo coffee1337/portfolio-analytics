@@ -163,6 +163,7 @@ export interface Overview {
     case_page: number;
     github: number;
     demo: number;
+    docs: number;
     clone_copy: number;
     score: number;
     weight: number;
@@ -188,6 +189,16 @@ export interface Overview {
   acquisition: { sources: Row[]; utm: Row[] };
   geo: { countries: Row[]; cities: Row[]; isps: Row[] };
   devices: { types: Row[]; os: Row[]; browsers: Row[]; screens: Row[] };
+  vitals: {
+    samples: number;
+    low_power_pct: number;
+    lcp: VitalsMetric;
+    inp: VitalsMetric;
+    cls: VitalsMetric;
+    fcp: VitalsMetric;
+    ttfb: VitalsMetric;
+    by_device: Record<"desktop" | "mobile", VitalsDevice>;
+  };
   preferences: { languages: Row[]; site_langs: Row[]; themes: Row[] };
   clicks: {
     outbound: { key: string; clicks: number; sessions: number; share: number }[];
@@ -244,11 +255,26 @@ export interface IgnoredItem {
   events: number;
 }
 
+export interface VitalsMetric {
+  p50: number | null;
+  p75: number | null;
+  count: number;
+  status: "good" | "warn" | "poor" | null;
+}
+
+export interface VitalsDevice {
+  samples: number;
+  lcp_p75: number | null;
+  inp_p75: number | null;
+  cls_p75: number | null;
+}
+
 export interface CleanupPreview {
   bots: number;
   me: number;
   total: number;
   ignored: number;
+  old_pings: number;
 }
 
 export interface MeInfo {

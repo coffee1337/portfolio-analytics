@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 
 import { useI18n } from "../i18n";
-import { countryName, flag, fmtDuration, fmtNum, fmtPct, shortPath } from "../lib/format";
+import { countryName, flag, fmtDuration, fmtNum, fmtPct, pluralize, shortPath } from "../lib/format";
 import type { Filters, Overview, Row } from "../lib/types";
 import { BrowserIcon, DeviceIcon, OsIcon, SourceIcon } from "./Icons";
 import { Badge, Bar, CardTitle, Empty, SectionHead, Tabs } from "./ui";
@@ -71,6 +71,98 @@ function Panel({ title, right, children }: { title: string; right?: ReactNode; c
       <CardTitle right={right}>{title}</CardTitle>
       {children}
     </div>
+  );
+}
+
+const VITALS_METRICS = ["lcp", "inp", "cls", "fcp", "ttfb"] as const;
+
+function formatVitals(metric: string, value: number | null, lang: string): string {
+  if (value === null || value === undefined) return "—";
+  if (metric === "cls") return Number(value.toFixed(3)).toString();
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}${lang === "ru" ? " с" : " s"}`;
+  return `${Math.round(value)}${lang === "ru" ? " мс" : " ms"}`;
+}
+
+const STATUS_TONE = { good: "ok", warn: "warn", poor: "danger" } as const;
+
+function VitalsPanel({ data }: { data: Overview["vitals"] }) {
+  const { t, lang } = useI18n();
+  const empty = data.samples === 0;
+  const samplesLabel = (count: number) =>
+    t("vitals.samples.count", {
+      n: fmtNum(count),
+      unit: pluralize(count, lang, {
+        one: t("vitals.sample.one"),
+        few: t("vitals.sample.few"),
+        many: t("vitals.sample.many"),
+      }),
+    });
+
+  return (
+    <Panel
+      title={t("vitals.title")}
+      right={
+        empty ? null : (
+          <span className="flex items-center gap-2">
+            <span className="mono text-[12px] text-ink-faint">
+              {samplesLabel(data.samples)}
+            </span>
+            <Badge tone={data.low_power_pct >= 50 ? "warn" : "ok"}>
+              {t("vitals.lowpower", { pct: Math.round(data.low_power_pct) })}
+            </Badge>
+          </span>
+        )
+      }
+    >
+      {empty ? (
+        <Empty>{t("vitals.empty")}</Empty>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {VITALS_METRICS.map((metric) => {
+              const item = data[metric];
+              const tone = item.status ? STATUS_TONE[item.status] : "ok";
+              return (
+                <div key={metric} className="border border-line-2 px-3 py-2.5">
+                  <div className="kicker mb-1">{t(`vitals.metric.${metric}`)}</div>
+                  <div className="num text-[24px] leading-none">{formatVitals(metric, item.p75, lang)}</div>
+                  <div className="mono mt-1 text-[12px] text-ink-faint">
+                    {t("vitals.p50")}: {formatVitals(metric, item.p50, lang)}
+                  </div>
+                  <div className="mt-2">
+                    {item.status ? (
+                      <Badge tone={tone}>{t(`vitals.status.${item.status}`)}</Badge>
+                    ) : (
+                      <span className="mono text-[12px] text-ink-faint">—</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 grid gap-2 border-t border-line-2 pt-3 sm:grid-cols-2">
+            {(["desktop", "mobile"] as const).map((device) => {
+              const item = data.by_device?.[device];
+              return (
+                <div key={device} className="flex items-baseline justify-between gap-2 text-[12.5px]">
+                  <span className="text-ink-dim">
+                    {t(`vitals.device.${device}`)}
+                    <span className="mono ml-1.5 text-[12px] text-ink-faint">
+                      {samplesLabel(item?.samples ?? 0)}
+                    </span>
+                  </span>
+                  <span className="mono text-[12px] text-ink-faint">
+                    LCP {formatVitals("lcp", item?.lcp_p75 ?? null, lang)} · INP{" "}
+                    {formatVitals("inp", item?.inp_p75 ?? null, lang)} · CLS{" "}
+                    {formatVitals("cls", item?.cls_p75 ?? null, lang)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </Panel>
   );
 }
 
@@ -259,6 +351,10 @@ export function AudienceSection({
               : null}
           </div>
         </Panel>
+
+        <div className="lg:col-span-2">
+          <VitalsPanel data={data.vitals} />
+        </div>
 
         <Panel title={t("audience.pages")}>
           <Tabs

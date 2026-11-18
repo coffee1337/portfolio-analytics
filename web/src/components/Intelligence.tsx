@@ -85,7 +85,7 @@ export function ProjectsMatrix({
     { key: "select", label: t("projects.select"), value: row.select, icon: <EventIcon name="project_select" size={13} /> },
     { key: "details", label: t("projects.details"), value: row.details, icon: <EventIcon name="section" size={13} /> },
     { key: "case", label: t("projects.case_page"), value: row.case_page, icon: <EventIcon name="pageview" size={13} /> },
-    { key: "github", label: "GitHub / Demo", value: row.github + row.demo, icon: <GoalIcon goal="project" size={13} /> },
+    { key: "github", label: "GitHub / Demo", value: row.github + row.demo + (row.docs ?? 0), icon: <GoalIcon goal="project" size={13} /> },
     { key: "clone", label: t("projects.clone"), value: row.clone_copy, icon: <EventIcon name="cmdk" size={13} /> },
   ];
 

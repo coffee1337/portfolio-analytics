@@ -11,6 +11,7 @@ export function SessionTimeline({ events, dense }: { events: TimelineEvent[]; de
   const visible = events.filter(
     (event) =>
       event.name !== "ping" &&
+      event.name !== "vitals" &&
       !(event.name === "exit" && event.id !== lastExitId && String(event.props?.reason ?? "") === "hidden"),
   );
 

@@ -1,12 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from conftest import BOT_UA, HUMAN_UA, collect, send
+import pytest
+
+from conftest import BASE_HEADERS, BOT_UA, HUMAN_UA, collect, send
 
 from app import geo
 from app.ingest import clean_referrer, resolve_ts
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate-limit counters live in a module singleton: clear them around every test."""
+
+    def reset() -> None:
+        module = sys.modules.get("app.ratelimit")
+        if module is not None:
+            module.reset_rate_limits()
+
+    reset()
+    yield
+    reset()
 
 
 class FakeRequest:
@@ -767,3 +785,202 @@ def test_geo_negative_cache_short_ttl():
     time_module.sleep(0.12)
     assert geo.cached_geo("8.8.4.4") is None
     assert geo.NEGATIVE_TTL == 300
+
+
+# ------------------------------ hardening ------------------------------ #
+
+
+MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+def test_collect_rejects_oversized_body(client):
+    oversized = b'{"key":"test-key","name":"pageview","path":"/","pad":"' + b"x" * 70_000 + b'"}'
+    response = client.post(
+        "/collect", content=oversized, headers={**BASE_HEADERS, "user-agent": HUMAN_UA}
+    )
+    assert response.status_code == 413
+    small = client.post(
+        "/collect",
+        content=b'{"key":"test-key","name":"pageview","path":"/","session":"s-ok","visitor":"visitorsize001"}',
+        headers={**BASE_HEADERS, "user-agent": HUMAN_UA},
+    )
+    assert small.status_code == 204
+
+
+def test_login_is_rate_limited_after_failures(auth_client):
+    for _ in range(8):
+        assert auth_client.post("/api/login", json={"token": "nope"}).status_code == 401
+    blocked = auth_client.post("/api/login", json={"token": "s3cret"})
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == "too many login attempts"
+    assert blocked.headers["retry-after"]
+    # A clean slate (redeploy, owner reset) lets the real token through again.
+    sys.modules["app.ratelimit"].reset_rate_limits()
+    assert auth_client.post("/api/login", json={"token": "s3cret"}).status_code == 200
+
+
+def test_preflight_and_cors_are_scoped(client):
+    foreign = client.options("/collect", headers={"origin": "https://evil.example"})
+    assert foreign.status_code == 403
+
+    allowed = client.options("/collect", headers={"origin": "https://coffee1337.github.io"})
+    assert allowed.status_code == 204
+    assert allowed.headers["access-control-allow-origin"] == "https://coffee1337.github.io"
+    assert "origin" in allowed.headers["vary"].lower()
+    assert allowed.headers["access-control-max-age"] == "86400"
+
+    api = client.get("/api/me", headers={"origin": "https://evil.example"})
+    assert api.headers.get("access-control-allow-origin", "") != "*"
+    own = client.get("/api/me", headers={"origin": "https://coffee1337.github.io"})
+    assert own.headers.get("access-control-allow-origin") == "https://coffee1337.github.io"
+
+
+def test_geo_lookups_are_deduplicated(monkeypatch):
+    from app import geo as geo_module
+
+    geo_module.clear_cache()
+    calls = {"n": 0}
+
+    async def fake_lookup(ip, client=None):  # noqa: ANN001, ARG001 - signature parity
+        calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return geo_module.GeoInfo(country="RU", city="Moscow", source="test")
+
+    monkeypatch.setattr(geo_module, "lookup_geo", fake_lookup)
+
+    async def run():
+        return await asyncio.gather(*[geo_module.enrich_geo_async("5.6.7.8") for _ in range(5)])
+
+    results = asyncio.run(run())
+    assert calls["n"] == 1
+    assert all(item.city == "Moscow" for item in results)
+    geo_module.clear_cache()
+
+
+def test_cleanup_old_pings_keeps_events(client):
+    from app import analytics as analytics_mod
+    from app.db import SessionLocal
+    from app.models import Event
+
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        for name, ts in (
+            ("ping", now - timedelta(days=20)),
+            ("ping", now - timedelta(minutes=5)),
+            ("pageview", now - timedelta(days=20)),
+        ):
+            db.add(
+                Event(
+                    ts=ts,
+                    site_key=analytics_mod.SITE_KEY,
+                    name=name,
+                    path="/",
+                    session_id="s-old",
+                    visitor="visitorping001",
+                )
+            )
+        db.commit()
+    analytics_mod.invalidate_overview_cache()
+
+    preview = client.get("/api/cleanup/preview").json()
+    assert preview["old_pings"] == 1
+    assert preview["total"] == 3
+
+    result = client.post("/api/cleanup", json={"scope": "old_pings"}).json()
+    assert result["deleted"] == 1
+    assert result["preview"]["old_pings"] == 0
+    assert result["preview"]["total"] == 2
+
+
+def test_vitals_stats_and_p75_statuses(client):
+    now = time.time()
+    desktop_headers = {**BASE_HEADERS, "user-agent": HUMAN_UA}
+    mobile_headers = {**BASE_HEADERS, "user-agent": MOBILE_UA}
+
+    collect(
+        client,
+        [
+            _event(
+                "vitals",
+                session="s-vitals-d1",
+                visitor="visitorvit00001",
+                props={"lcp": 1000, "inp": 100, "cls": 0.05, "fcp": 700, "ttfb": 200, "low_power": 0},
+                ts=(now - 90) * 1000,
+            ),
+            _event(
+                "vitals",
+                session="s-vitals-d2",
+                visitor="visitorvit00002",
+                props={"lcp": 2000, "inp": 150, "cls": 0.1, "fcp": 900, "ttfb": 300, "low_power": 0},
+                ts=(now - 80) * 1000,
+            ),
+        ],
+        headers=desktop_headers,
+    )
+    collect(
+        client,
+        [
+            _event(
+                "vitals",
+                session="s-vitals-m1",
+                visitor="visitorvit00003",
+                props={"lcp": 5000, "cls": 0.3, "low_power": 1},
+                ts=(now - 70) * 1000,
+            ),
+        ],
+        headers=mobile_headers,
+    )
+
+    vitals = client.get("/api/overview?range=today").json()["vitals"]
+    assert vitals["samples"] == 3
+    assert vitals["lcp"]["count"] == 3
+    assert vitals["lcp"]["p50"] == 2000
+    assert vitals["lcp"]["p75"] == 3500
+    assert vitals["lcp"]["status"] == "warn"
+    assert vitals["inp"]["count"] == 2
+    assert vitals["inp"]["p75"] == 138
+    assert vitals["inp"]["status"] == "good"
+    assert vitals["cls"]["p75"] == 0.2
+    assert vitals["cls"]["status"] == "warn"
+    assert vitals["ttfb"]["status"] == "good"
+    assert vitals["low_power_pct"] == pytest.approx(33.3, abs=0.2)
+    assert vitals["by_device"]["desktop"]["samples"] == 2
+    assert vitals["by_device"]["desktop"]["lcp_p75"] == 1750
+    assert vitals["by_device"]["mobile"]["samples"] == 1
+    assert vitals["by_device"]["mobile"]["lcp_p75"] == 5000
+
+
+def test_docs_action_and_anchor_click(client):
+    now = time.time()
+    collect(
+        client,
+        [
+            _event("pageview", path="/projects/knn/", session="s-docs", visitor="visitordocs001", ts=(now - 60) * 1000),
+            _event(
+                "project_action",
+                session="s-docs",
+                visitor="visitordocs001",
+                props={"project": "knn", "action": "docs", "href": "https://github.com/coffee1337/knn/tree/main/docs"},
+                ts=(now - 50) * 1000,
+            ),
+            _event(
+                "click",
+                session="s-docs",
+                visitor="visitordocs001",
+                props={"kind": "anchor", "text": "Explore work", "target": "#projects"},
+                ts=(now - 40) * 1000,
+            ),
+        ],
+    )
+    payload = client.get("/api/overview?range=today").json()
+    project = next(row for row in payload["projects"] if row["id"] == "knn")
+    assert project["docs"] == 1
+    goals = {row["key"]: row for row in payload["goals"]}
+    assert goals["project"]["events"] >= 1
+    buttons = {row["key"]: row for row in payload["clicks"]["buttons"]}
+    assert buttons["Explore work (#projects)"]["clicks"] == 1
+    outbound_keys = [row["key"] for row in payload["clicks"]["outbound"]]
+    assert all("Explore work" not in key for key in outbound_keys)

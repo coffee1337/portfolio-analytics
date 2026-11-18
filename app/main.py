@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import analytics, auth, geo, ingest
+from . import analytics, auth, geo, ingest, ratelimit
 from .db import ensure_schema, get_db
 from .models import Event, utcnow
 from .schema import PayloadError, parse_payload
@@ -29,6 +29,8 @@ ALLOWED_ORIGINS = {
     if value.strip()
 }
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+MAX_COLLECT_BYTES = 65_536
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -45,7 +47,7 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=sorted(ALLOWED_ORIGINS | {"*"}),
+    allow_origins=sorted(ALLOWED_ORIGINS),
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["content-type", "authorization"],
     allow_credentials=False,
@@ -58,9 +60,29 @@ def health() -> dict:
     return {"status": "ok", "ts": utcnow().isoformat()}
 
 
+def _rate_key(request: Request) -> str:
+    """Group requests by salted IP hash; fall back to the raw client address."""
+    client_ip = geo.extract_client_ip(request)
+    return geo.hash_ip(client_ip) or client_ip or "local"
+
+
 @app.post("/collect", status_code=204)
 async def collect(request: Request, background: BackgroundTasks, db: Session = Depends(get_db)) -> Response:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_COLLECT_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
     raw = await request.body()
+    if len(raw) > MAX_COLLECT_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
+
+    retry_after = ratelimit.collect_limiter.hit(_rate_key(request))
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="too many requests",
+            headers={"Retry-After": str(int(retry_after) or ratelimit.COLLECT_WINDOW)},
+        )
+
     try:
         events = parse_payload(raw)
     except PayloadError as exc:
@@ -90,9 +112,14 @@ async def collect(request: Request, background: BackgroundTasks, db: Session = D
 
 
 @app.options("/collect", status_code=204)
-def collect_preflight() -> Response:
+def collect_preflight(request: Request) -> Response:
+    """Only known sites may preflight: no wildcard on the write endpoint."""
+    origin = request.headers.get("origin", "")
+    if origin and origin not in ALLOWED_ORIGINS:
+        raise HTTPException(status_code=403, detail="origin not allowed")
     response = Response(status_code=204)
-    response.headers["access-control-allow-origin"] = "*"
+    response.headers["access-control-allow-origin"] = origin or sorted(ALLOWED_ORIGINS)[0]
+    response.headers["vary"] = "Origin"
     response.headers["access-control-allow-methods"] = "POST, OPTIONS"
     response.headers["access-control-allow-headers"] = "content-type"
     response.headers["access-control-max-age"] = "86400"
@@ -106,9 +133,20 @@ def collect_preflight() -> Response:
 
 @app.post("/api/login")
 def login(request: Request, payload: dict = Body(...)) -> JSONResponse:
+    key = _rate_key(request)
+    retry_after = ratelimit.login_limiter.retry_after(key)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="too many login attempts",
+            headers={"Retry-After": str(int(retry_after) or ratelimit.LOGIN_WINDOW)},
+        )
     candidate = str(payload.get("token") or "")
     if not auth.token_matches(candidate):
+        ratelimit.login_limiter.record(key)
         raise HTTPException(status_code=401, detail="invalid token")
+    # A good token proves the caller is the owner: no reason to keep the failures.
+    ratelimit.login_limiter.clear(key)
     response = JSONResponse({"ok": True, "auth": auth.auth_enabled()})
     auth.set_auth_cookie(response, request)
     return response

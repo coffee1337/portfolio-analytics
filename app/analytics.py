@@ -35,6 +35,8 @@ _overview_lock = threading.Lock()
 
 MSK = ZoneInfo("Europe/Moscow")
 LIVE_WINDOW = timedelta(minutes=5)
+# Heartbeats are only needed to measure active time of recent visits.
+PING_RETENTION_DAYS = 14
 MAX_ROWS = 200_000
 ENGAGED_SECONDS = 15
 ENGAGED_SCROLL = 50
@@ -446,7 +448,7 @@ def goal_of(row: dict) -> str:
         return "social"
     if name == "entry_cta":
         return "entry_cta"
-    if name == "project_action" and str(props.get("action")) in ("github", "demo", "clone_copy"):
+    if name == "project_action" and str(props.get("action")) in ("github", "demo", "docs", "clone_copy"):
         return "project"
     if name == "pageview" and project_from_path(row["path"]):
         return "project"
@@ -1004,7 +1006,7 @@ def project_matrix(sessions: list[SessionRow]) -> list[dict]:
                 bucket["details"] += 1
             elif name == "project_action":
                 action = str(props.get("action") or "")
-                if action in ("github", "demo", "clone_copy"):
+                if action in ("github", "demo", "docs", "clone_copy"):
                     bucket[action] += 1
             elif name == "pageview" and project_from_path(row["path"]):
                 bucket["case_page"] += 1
@@ -1016,6 +1018,7 @@ def project_matrix(sessions: list[SessionRow]) -> list[dict]:
             + counter["case_page"] * 3
             + counter["github"] * 4
             + counter["demo"] * 4
+            + counter["docs"] * 3
             + counter["clone_copy"] * 3
         )
         rows.append(
@@ -1026,6 +1029,7 @@ def project_matrix(sessions: list[SessionRow]) -> list[dict]:
                 "case_page": counter["case_page"],
                 "github": counter["github"],
                 "demo": counter["demo"],
+                "docs": counter["docs"],
                 "clone_copy": counter["clone_copy"],
                 "score": score,
                 "avg_sec": round(case_seconds[project] / case_views[project], 1) if case_views[project] else 0.0,
@@ -1450,6 +1454,7 @@ def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 3
             "browsers": breakdown(filtered, "browser"),
             "screens": breakdown(filtered, "screen"),
         },
+        "vitals": vitals_stats(filtered),
         "preferences": {
             "languages": languages(filtered),
             "site_langs": site_langs(filtered),
@@ -1468,6 +1473,117 @@ def _overview(db: Session, filters: Filters, *, page: int = 1, per_page: int = 3
         },
     }
 
+
+
+VITALS_METRICS = ("lcp", "inp", "cls", "fcp", "ttfb")
+# (good_max, warn_max) per Core Web Vitals metric; above warn_max is "poor".
+VITALS_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "lcp": (2500.0, 4000.0),
+    "inp": (200.0, 500.0),
+    "cls": (0.1, 0.25),
+    "fcp": (1800.0, 3000.0),
+    "ttfb": (800.0, 1800.0),
+}
+
+
+def _percentile(values: list[float], ratio: float) -> float:
+    """Linear-interpolated percentile; the input is never empty here."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    position = (len(ordered) - 1) * ratio
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    if low == high:
+        return float(ordered[low])
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def _vitals_status(metric: str, value: float | None) -> str | None:
+    if value is None:
+        return None
+    good, warn = VITALS_THRESHOLDS[metric]
+    if value <= good:
+        return "good"
+    if value <= warn:
+        return "warn"
+    return "poor"
+
+
+def _vitals_round(metric: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value, 3) if metric == "cls" else int(round(value))
+
+
+def vitals_stats(sessions: list[SessionRow]) -> dict:
+    """Core Web Vitals reported by the beacon, aggregated per metric and device."""
+    values: dict[str, list[float]] = {metric: [] for metric in VITALS_METRICS}
+    device_values: dict[str, dict[str, list[float]]] = {
+        "desktop": {metric: [] for metric in ("lcp", "inp", "cls")},
+        "mobile": {metric: [] for metric in ("lcp", "inp", "cls")},
+    }
+    device_samples = {"desktop": 0, "mobile": 0}
+    samples = 0
+    low_power = 0
+
+    for session in sessions:
+        device = session.device if session.device in device_values else ""
+        for row in session.events:
+            if row["name"] != "vitals":
+                continue
+            props = row["p"]
+            samples += 1
+            if device:
+                device_samples[device] += 1
+            if str(props.get("low_power", "")) in ("1", "True", "true"):
+                low_power += 1
+            for metric in VITALS_METRICS:
+                raw = props.get(metric)
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if metric == "cls":
+                    value = round(value, 3)
+                if value < 0:
+                    continue
+                values[metric].append(value)
+                if device and metric in device_values[device]:
+                    device_values[device][metric].append(value)
+
+    metrics: dict[str, dict] = {}
+    for metric in VITALS_METRICS:
+        bucket = values[metric]
+        if not bucket:
+            metrics[metric] = {"p50": None, "p75": None, "count": 0, "status": None}
+            continue
+        p75 = _percentile(bucket, 0.75)
+        metrics[metric] = {
+            "p50": _vitals_round(metric, _percentile(bucket, 0.5)),
+            "p75": _vitals_round(metric, p75),
+            "count": len(bucket),
+            "status": _vitals_status(metric, p75),
+        }
+
+    by_device: dict[str, dict] = {}
+    for device, buckets in device_values.items():
+        row: dict[str, object] = {"samples": device_samples[device]}
+        for metric in ("lcp", "inp", "cls"):
+            bucket = buckets[metric]
+            row[f"{metric}_p75"] = (
+                _vitals_round(metric, _percentile(bucket, 0.75)) if bucket else None
+            )
+        by_device[device] = row
+
+    return {
+        "samples": samples,
+        "low_power_pct": pct(low_power, samples),
+        "by_device": by_device,
+        **metrics,
+    }
 
 
 def heatmap_matrix(sessions: list[SessionRow]) -> dict:
@@ -1533,7 +1649,7 @@ def insights_block(
                 "score": top_project["score"],
                 "actions": sum(
                     top_project.get(key, 0)
-                    for key in ("select", "details", "case_page", "github", "demo", "clone_copy")
+                    for key in ("select", "details", "case_page", "github", "demo", "docs", "clone_copy")
                 ),
             }
             if top_project
@@ -1592,7 +1708,14 @@ def clicks_breakdown(sessions: list[SessionRow]) -> dict:
             elif name == "click":
                 kind = str(props.get("kind") or "")
                 target = str(props.get("target") or "")
-                if kind not in ("", "anchor") and _readable(target or kind):
+                text = str(props.get("text") or "").strip()
+                if kind == "anchor":
+                    # In-page CTA ("Explore work" -> #projects): a button, not an outbound link.
+                    label = f"{text} ({target})" if text and target and text != target else (text or target)
+                    label = label[:56]
+                    if _readable(label):
+                        bump(buttons, button_sessions, label, session.sid)
+                elif kind != "" and _readable(target or kind):
                     bump(outbound, outbound_sessions, target or kind, session.sid)
             elif name == "entry_cta":
                 bump(buttons, button_sessions, f"entry: {props.get('card') or 'card'}", session.sid)
@@ -1949,12 +2072,28 @@ def remove_ignored(db: Session, ident: int) -> bool:
     return True
 
 
+def _ping_cutoff() -> datetime:
+    return utcnow() - timedelta(days=PING_RETENTION_DAYS)
+
+
 def cleanup_preview(db: Session) -> dict:
     bots = db.scalar(select(func.count(Event.id)).where(Event.is_bot.is_(True))) or 0
     me = db.scalar(select(func.count(Event.id)).where(Event.is_me.is_(True))) or 0
     total = db.scalar(select(func.count(Event.id))) or 0
     ignored = db.scalar(select(func.count(IgnoredIdentity.id))) or 0
-    return {"bots": int(bots), "me": int(me), "total": int(total), "ignored": int(ignored)}
+    old_pings = (
+        db.scalar(
+            select(func.count(Event.id)).where(Event.name == "ping", Event.ts < _ping_cutoff())
+        )
+        or 0
+    )
+    return {
+        "bots": int(bots),
+        "me": int(me),
+        "total": int(total),
+        "ignored": int(ignored),
+        "old_pings": int(old_pings),
+    }
 
 
 def cleanup(db: Session, scope: str, confirm: str = "") -> dict:
@@ -1970,6 +2109,13 @@ def cleanup(db: Session, scope: str, confirm: str = "") -> dict:
         deleted = db.execute(delete(Event).where(Event.is_me.is_(True))).rowcount or 0
     elif scope == "ignored":
         deleted = db.execute(delete(IgnoredIdentity)).rowcount or 0
+    elif scope == "old_pings":
+        # Heartbeats are only used to measure active time of recent visits:
+        # pageviews, exits (with active_sec) and conversions stay untouched.
+        deleted = (
+            db.execute(delete(Event).where(Event.name == "ping", Event.ts < _ping_cutoff())).rowcount
+            or 0
+        )
     else:
         raise ValueError("unknown scope")
     db.commit()

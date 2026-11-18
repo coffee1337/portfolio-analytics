@@ -68,7 +68,7 @@ coffee1337.github.io ──POST /collect──▶ FastAPI ──▶ Neon
 | GET/POST | `/api/ignore` | список / добавить «это я» (`sid`, либо `kind`+`value`) |
 | POST | `/api/ignore/self` | пометить собственный IP дашборда (`ip_hash`) как владельца |
 | DELETE | `/api/ignore/{id}` | убрать из игнора |
-| POST | `/api/cleanup` | `{scope: bots\|me\|ignored\|all, confirm}` |
+| POST | `/api/cleanup` | `{scope: bots\|me\|ignored\|old_pings\|all, confirm}` (старые `ping` > 14 дней сжимаются отдельно) |
 | GET | `/api/cleanup/preview` | сколько строк попадёт под очистку |
 | GET | `/api/export/sessions.csv` | CSV сессий с учётом фильтров |
 | GET | `/api/export/events.json` | JSON событий с учётом фильтров |
@@ -84,7 +84,14 @@ coffee1337.github.io ──POST /collect──▶ FastAPI ──▶ Neon
 `heatmap` (7×24 визитов по дням недели и часам МСК), `insights` (топ-проект,
 главный источник, доскролл до контактов, пик активности), `clicks` (топ внешних ссылок
 и кнопок), `preferences` (язык браузера, версия сайта, тема по сессиям) и
-`sessions.counts` (счётчики вкладок журнала за весь период, а не за страницу).
+`sessions.counts` (счётчики вкладок журнала за весь период, а не за страницу) и
+`vitals` (p50/p75 по LCP, INP, CLS, FCP, TTFB с оценками good/warn/poor и срезом desktop/mobile).
+
+## CI
+
+`.github/workflows/ci.yml` на каждый push/PR в `main`: проверяет, что закоммиченная `app/static`
+консистентна (все `/assets/*` из `index.html` существуют, ровно один `index-*.js` и один
+`index-*.css`), гоняет `pytest -q` на Python 3.12 и собирает SPA на Node 22.
 
 ## Дашборд
 

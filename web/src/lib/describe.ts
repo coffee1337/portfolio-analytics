@@ -73,6 +73,8 @@ export function describeEvent(event: TimelineEvent, t: Translate): string {
     case "click":
     case "ui":
       return t(`desc.${event.name}`, { text: prop(props, "text", prop(props, "target", "—")) });
+    case "vitals":
+      return t("desc.vitals", { lcp: prop(props, "lcp", "—"), inp: prop(props, "inp", "—") });
     case "exit":
       return t("desc.exit");
     case "ping":

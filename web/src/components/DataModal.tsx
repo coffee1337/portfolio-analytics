@@ -171,6 +171,25 @@ export function DataModal({
               </span>
             </div>
             <div className="flex items-center justify-between gap-3 border border-line-2 px-3 py-2">
+              <span className="min-w-0">
+                <span className="block text-[13.5px] font-medium text-ink">{t("data.old_pings")}</span>
+                <span className="block text-[12px] text-ink-faint">{t("data.old_pings.hint")}</span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="mono text-[12px] text-ink-faint">
+                  {t("data.rows", { count: preview?.old_pings ?? 0 })}
+                </span>
+                <button
+                  type="button"
+                  className="btn px-2 py-1"
+                  onClick={() => run("old_pings")}
+                  disabled={busy || !preview?.old_pings}
+                >
+                  ×
+                </button>
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3 border border-line-2 px-3 py-2">
               <span className="text-[13.5px] font-medium text-ink">{t("data.ignored")}</span>
               <span className="flex items-center gap-2">
                 <span className="mono text-[12px] text-ink-faint">{t("data.rows", { count: preview?.ignored ?? 0 })}</span>
